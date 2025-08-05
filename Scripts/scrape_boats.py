@@ -22,9 +22,8 @@ PRICE_SELECTOR = "span.t3.font-bold.inline-block"
 LOCATION_SELECTOR = "div.text-xs span.mr-8"
 SELLER_TYPE_SELECTOR = "div.text-xs span.mr-8:first-child"
 
-# CSS selector for the "next page" button/link
-NEXT_PAGE_SELECTOR = "a.sf-button-page-next"
-
+# CSS selector for the "next page" button/link - updated to match actual HTML structure
+NEXT_PAGE_SELECTOR = "a[rel='next']"
 BASE_URL = "https://www.finn.no"
 
 def fetch_html(url: str) -> str | None:
@@ -183,17 +182,31 @@ def get_next_page_url(soup: BeautifulSoup, current_url: str) -> str | None:
         logging.debug(f"Next page href: {href}")
         
         if not href or not isinstance(href, str):
+            logging.debug("Ingen href funnet på next link")
             return None
 
         # Håndter relativ URL med query params
         if href.startswith("?"):
-            base_url = current_url.split("?")[0]
+            # Parse current URL to get base
+            parsed_current = urlparse(current_url)
+            base_url = f"{parsed_current.scheme}://{parsed_current.netloc}{parsed_current.path}"
             next_url = f"{base_url}{href}"
             logging.debug(f"Bygget next URL: {next_url}")
             return next_url
-            
-        logging.warning(f"Uventet next-page URL format: {href}")
-        return None
+        elif href.startswith("/"):
+            # Absolute path
+            parsed_current = urlparse(current_url)
+            base_url = f"{parsed_current.scheme}://{parsed_current.netloc}"
+            next_url = f"{base_url}{href}"
+            logging.debug(f"Bygget next URL: {next_url}")
+            return next_url
+        elif href.startswith("http"):
+            # Full URL
+            logging.debug(f"Full URL funnet: {href}")
+            return href
+        else:
+            logging.warning(f"Uventet next-page URL format: {href}")
+            return None
         
     except Exception as e:
         logging.error(f"Feil ved parsing av next page: {e}")
@@ -234,9 +247,13 @@ def get_boat_ads_data(url: str, max_pages: int = 50, output_path: Path | None = 
         logging.info(f"Hentet {len(page_ads)} annonser fra side {page}")
         
         # Finn neste side hvis den finnes
+        logging.debug(f"Søker etter neste side på side {page}")
         current_url = get_next_page_url(soup, current_url)
         if not current_url:
+            logging.info(f"Ingen neste side funnet på side {page}")
             break
+        else:
+            logging.info(f"Fant neste side: {current_url}")
             
         page += 1
         if page > max_pages:
@@ -262,10 +279,5 @@ if __name__ == "__main__":
     output_dir = Path(__file__).parent.parent / "Data"
     output_file = output_dir / f"sailboats_{datetime.now(timezone.utc):%Y%m%d_%H%M%S}.json"
     
-    # Fjernet duplisert kall
     ads = get_boat_ads_data(url, output_path=output_file)
-    output_dir = Path(__file__).parent.parent / "Data"
-    output_file = output_dir / f"sailboats_{datetime.now(timezone.utc):%Y%m%d_%H%M%S}.json"
-    
-ads = get_boat_ads_data(url, output_path=output_file)
 
