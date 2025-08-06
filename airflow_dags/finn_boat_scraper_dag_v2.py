@@ -16,11 +16,13 @@ scraper_paths = [
 for path in scraper_paths:
     if os.path.exists(path):
         sys.path.append(path)
+        logging.info(f"Added to Python path: {path}")
         break
 
 # Importer din egen, oppdaterte funksjon
 try:
     from scrape_boats import get_boat_ads_data
+    logging.info("Successfully imported scrape_boats")
 except ImportError as e:
     logging.error(f"Kunne ikke importere scrape_boats: {e}")
     logging.error(f"Python path: {sys.path}")
