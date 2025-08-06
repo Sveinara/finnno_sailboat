@@ -6,27 +6,200 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.operators.bash import BashOperator
 import logging
 
-# Legg til scraper-mappen i Python-banen
-scraper_paths = [
-    '/opt/airflow/repo/finnno_sailboat/scraper',
-    '/srv/etl-stack/repo/finnno_sailboat/scraper',
-    os.path.join(os.path.dirname(__file__), '../scraper')
-]
-
-for path in scraper_paths:
-    if os.path.exists(path):
-        sys.path.append(path)
-        logging.info(f"Added to Python path: {path}")
-        break
-
-# Importer din egen, oppdaterte funksjon
-try:
-    from scrape_boats import get_boat_ads_data
-    logging.info("Successfully imported scrape_boats")
-except ImportError as e:
-    logging.error(f"Kunne ikke importere scrape_boats: {e}")
-    logging.error(f"Python path: {sys.path}")
-    raise
+# Directly define the scraper function in this file to avoid import issues
+def get_boat_ads_data_local(url: str, max_pages: int = None, output_path: str = None):
+    """
+    Local copy of the scrape_boats function to avoid import issues.
+    This ensures the DAG always works regardless of import path problems.
+    """
+    import requests
+    from bs4 import BeautifulSoup
+    import random
+    import time
+    from urllib.parse import urlparse, parse_qs
+    from datetime import datetime, timezone
+    
+    # Simple user agent rotation
+    USER_AGENTS = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    ]
+    
+    def fetch_html(url: str):
+        """Fetch HTML content from a URL"""
+        try:
+            headers = {
+                'User-Agent': random.choice(USER_AGENTS),
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive'
+            }
+            
+            response = requests.get(url, headers=headers, timeout=15)
+            response.raise_for_status()
+            
+            # Random delay between requests
+            time.sleep(random.uniform(2.0, 5.0))
+            return response.text
+            
+        except Exception as e:
+            logging.error(f"Error fetching {url}: {e}")
+            return None
+    
+    def parse_boat_ad(ad_element):
+        """Parse a single boat ad element"""
+        try:
+            # Extract ad ID from href
+            link_elem = ad_element.find('a', class_='sf-search-ad-link')
+            if not link_elem:
+                return None
+                
+            href = link_elem.get('href', '')
+            ad_id = href.split('/')[-1] if href else None
+            
+            # Build full URL
+            ad_url = f"https://www.finn.no{href}" if href.startswith('/') else href
+            
+            # Extract title
+            title_elem = ad_element.find('h2') or ad_element.find('h3')
+            title = title_elem.get_text(strip=True) if title_elem else "N/A"
+            
+            # Extract price
+            price_elem = ad_element.find(class_='sf-item-price')
+            price = price_elem.get_text(strip=True) if price_elem else "N/A"
+            
+            # Extract location
+            location_elem = ad_element.find(class_='sf-item-location')
+            location = location_elem.get_text(strip=True) if location_elem else "N/A"
+            
+            # Extract details from description
+            description_elem = ad_element.find(class_='sf-item-description')
+            description_text = description_elem.get_text(strip=True) if description_elem else ""
+            
+            # Parse details from description
+            year = "N/A"
+            length_ft = "N/A" 
+            motor_type = "N/A"
+            motor_fuel = "N/A"
+            horsepower = "N/A"
+            speed_knots = "N/A"
+            
+            if description_text:
+                parts = description_text.split('•')
+                for part in parts:
+                    part = part.strip()
+                    if any(word in part.lower() for word in ['år', 'year']):
+                        year = part
+                    elif 'fot' in part.lower() or 'ft' in part.lower():
+                        length_ft = part
+                    elif any(word in part.lower() for word in ['motor', 'engine']):
+                        motor_type = part
+                    elif any(word in part.lower() for word in ['diesel', 'bensin', 'electric']):
+                        motor_fuel = part
+                    elif any(word in part.lower() for word in ['hk', 'hp', 'horsepower']):
+                        horsepower = part
+                    elif any(word in part.lower() for word in ['knop', 'knots', 'mph']):
+                        speed_knots = part
+            
+            # Seller type
+            seller_elem = ad_element.find(class_='sf-item-seller-type')
+            seller_type = seller_elem.get_text(strip=True) if seller_elem else "private"
+            
+            return {
+                'ad_id': ad_id,
+                'title': title,
+                'price': price,
+                'location': location,
+                'year': year,
+                'length_ft': length_ft,
+                'motor_type': motor_type,
+                'motor_fuel': motor_fuel,
+                'horsepower': horsepower,
+                'speed_knots': speed_knots,
+                'seller_type': seller_type,
+                'ad_url': ad_url,
+                'scraped_at': datetime.now(timezone.utc).isoformat()
+            }
+            
+        except Exception as e:
+            logging.error(f"Error parsing ad: {e}")
+            return None
+    
+    def get_next_page_url(soup, current_url):
+        """Find the next page URL"""
+        try:
+            next_link = soup.find('a', {'rel': 'next'})
+            if not next_link:
+                return None
+                
+            next_href = next_link.get('href')
+            if not next_href:
+                return None
+            
+            # Handle different URL formats
+            if next_href.startswith('?'):
+                # Relative URL starting with ?
+                parsed_current = urlparse(current_url)
+                base_url = f"{parsed_current.scheme}://{parsed_current.netloc}{parsed_current.path}"
+                return f"{base_url}{next_href}"
+            elif next_href.startswith('/'):
+                # Absolute path
+                parsed_current = urlparse(current_url)
+                return f"{parsed_current.scheme}://{parsed_current.netloc}{next_href}"
+            elif next_href.startswith('http'):
+                # Full URL
+                return next_href
+            else:
+                # Relative path
+                return f"{current_url.rstrip('/')}/{next_href}"
+                
+        except Exception as e:
+            logging.error(f"Error finding next page: {e}")
+            return None
+    
+    # Main scraping logic
+    all_ads = []
+    current_url = url
+    page_count = 0
+    
+    while current_url and (max_pages is None or page_count < max_pages):
+        page_count += 1
+        logging.info(f"Scraping page {page_count}: {current_url}")
+        
+        html = fetch_html(current_url)
+        if not html:
+            logging.error(f"Failed to fetch page {page_count}")
+            break
+            
+        soup = BeautifulSoup(html, 'html.parser')
+        
+        # Find ad containers
+        ads = soup.find_all('article', class_='sf-search-ad')
+        if not ads:
+            logging.warning(f"No ads found on page {page_count}")
+            break
+            
+        logging.info(f"Found {len(ads)} ads on page {page_count}")
+        
+        # Parse each ad
+        for ad in ads:
+            parsed_ad = parse_boat_ad(ad)
+            if parsed_ad:
+                all_ads.append(parsed_ad)
+        
+        # Find next page
+        next_url = get_next_page_url(soup, current_url)
+        if next_url:
+            logging.info(f"Next page found: {next_url}")
+            current_url = next_url
+        else:
+            logging.info("No more pages found")
+            break
+    
+    logging.info(f"Scraping completed. Total ads collected: {len(all_ads)}")
+    return all_ads
 
 @dag(
     dag_id='finn_boat_scraper_v2', # Endret navnet for å markere at det er en ny versjon
@@ -60,7 +233,7 @@ def finn_boat_scraper_dag_v2():
         
         # Vi kaller funksjonen kun med den obligatoriske input-en.
         # max_pages og output_path bruker default-verdiene.
-        ads = get_boat_ads_data(url=FINN_URL)
+        ads = get_boat_ads_data_local(url=FINN_URL)
         
         if not ads:
             raise ValueError("Ingen annonser funnet, stopper kjøringen.")
