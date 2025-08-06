@@ -6,7 +6,7 @@ from airflow.operators.bash import BashOperator
 import logging
 
 # Oppdatert sti til prosjektet ditt
-sys.path.append('/srv/etl-stack/repo/finnno_sailboat/scraper')
+sys.path.append('/opt/airflow/repo/finnno_sailboat/scraper')
 
 # Importer din egen, oppdaterte funksjon
 from scrape_boats import get_boat_ads_data
