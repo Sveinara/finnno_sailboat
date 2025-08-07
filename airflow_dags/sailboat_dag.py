@@ -8,7 +8,7 @@ import logging
 
 # Legg til scraper-mappen i Python-banen
 scraper_paths = [
-    '/opt/airflow/repo/finnno_sailboat/scraper',
+    '/opt/airflow/project',
     '/srv/etl-stack/repo/finnno_sailboat/scraper',
     os.path.join(os.path.dirname(__file__), '../scraper')
 ]
@@ -29,20 +29,20 @@ except ImportError as e:
     raise
 
 @dag(
-    dag_id='finn_boat_scraper_v2', # Endret navnet for å markere at det er en ny versjon
+    dag_id='sailboat_dag', # Endret navnet for å markere at det er en ny versjon
     start_date=datetime(2023, 10, 26),
     schedule='0 7,18 * * *', # Kjører 07:00 og 18:00
     catchup=False,
-    tags=['finn', 'scraping', 'boats', 'v2'],
+    tags=['finn', 'scraping', 'sailboat'],
     doc_md="""
-    ### Finn.no Boat Scraper DAG (v2)
+    ### Finn.no Sailboat Scraper DAG 
     Henter ALLE seilbåtannonser fra Finn.no ved å følge paginering.
     - **Random Delay**: Venter et tilfeldig antall sekunder (0-2 timer).
     - **Extract**: Kjører Python-funksjon for å scrape data over flere sider.
     - **Load**: Laster data inn i en staging-tabell i Postgres.
     """
 )
-def finn_boat_scraper_dag_v2():
+def sailboat_dag():
 
     random_delay = BashOperator(
         task_id='random_delay',
@@ -105,4 +105,4 @@ def finn_boat_scraper_dag_v2():
     random_delay >> extracted_ads
 
 # Instansierer DAGen
-finn_boat_scraper_dag_v2()
+sailboat_dag()
