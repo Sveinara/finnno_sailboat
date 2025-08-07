@@ -5,28 +5,8 @@ from airflow.decorators import dag, task
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.operators.bash import BashOperator
 import logging
-
-# Legg til scraper-mappen i Python-banen
-scraper_paths = [
-    '/opt/airflow/project',
-    '/srv/etl-stack/repo/finnno_sailboat/scraper',
-    os.path.join(os.path.dirname(__file__), '../scraper')
-]
-
-for path in scraper_paths:
-    if os.path.exists(path):
-        sys.path.append(path)
-        logging.info(f"Added to Python path: {path}")
-        break
-
-# Importer din egen, oppdaterte funksjon
-try:
-    from scrape_boats import get_boat_ads_data
-    logging.info("Successfully imported scrape_boats")
-except ImportError as e:
-    logging.error(f"Kunne ikke importere scrape_boats: {e}")
-    logging.error(f"Python path: {sys.path}")
-    raise
+# ✅ Import fra installert pip-pakke
+from finnno_sailboat.scraper.scrape_boats import get_boat_ads_data
 
 @dag(
     dag_id='sailboat_dag', # Endret navnet for å markere at det er en ny versjon
