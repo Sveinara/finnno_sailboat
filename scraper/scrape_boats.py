@@ -26,6 +26,7 @@ SELLER_TYPE_SELECTOR = "div.text-xs span.mr-8:first-child"
 NEXT_PAGE_SELECTOR = "a[rel='next']"
 BASE_URL = "https://www.finn.no"
 
+
 def fetch_html(url: str) -> str | None:
     """
     Henter HTML med randomisert User-Agent og headers.
@@ -43,13 +44,17 @@ def fetch_html(url: str) -> str | None:
     except requests.RequestException as e:
         logging.error(f"Feil ved henting av {url}: {e}")
         return None
+
+
 def parse_finn_boats(html_content: str, scraped_at_ts: datetime) -> List[Dict[str, Union[str, int, datetime, None]]]:
     """
     Parser HTML fra Finn båt-resultatside.
     Returnerer liste av dict med annonsefelter.
     """
     try:
-        soup = BeautifulSoup(html_content, "html.parser")
+        # Prefer lxml if installed for more robust parsing
+        parser = "lxml"
+        soup = BeautifulSoup(html_content, parser)
         logging.debug(f"HTML innhold lengde: {len(html_content)}")
         ads: ResultSet[Tag] = soup.select(AD_ARTICLE_SELECTOR)
         logging.debug(f"Fant {len(ads)} annonser med selector: {AD_ARTICLE_SELECTOR}")
@@ -162,11 +167,13 @@ def parse_finn_boats(html_content: str, scraped_at_ts: datetime) -> List[Dict[st
             except Exception as e:
                 logging.error(f"Feil ved parsing av annonse: {e}", exc_info=True)
 
+        logging.info(f"Parser returnerer {len(parsed_ads)} annonser denne siden")
         return parsed_ads
     
     except Exception as e:
         logging.error(f"Feil ved parsing av HTML-innhold: {e}", exc_info=True)
         return []
+
 
 def get_next_page_url(soup: BeautifulSoup, current_url: str) -> str | None:
     """Henter URL til neste resultatside hvis den finnes."""
@@ -212,12 +219,14 @@ def get_next_page_url(soup: BeautifulSoup, current_url: str) -> str | None:
         logging.error(f"Feil ved parsing av next page: {e}")
         return None
 
+
 def save_ads_to_json(ads: list[dict], output_path: Path) -> None:
     """Lagrer annonser til JSON-fil."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open('w', encoding='utf-8') as f:
         json.dump(ads, f, ensure_ascii=False, indent=2, default=str)
     logging.info(f"Lagret {len(ads)} annonser til {output_path}")
+
 
 def get_boat_ads_data(url: str, max_pages: int = 50, output_path: Path | None = None) -> list[dict]:
     """
@@ -239,7 +248,8 @@ def get_boat_ads_data(url: str, max_pages: int = 50, output_path: Path | None = 
             logging.error(f"Kunne ikke hente HTML for side {page}.")
             break
 
-        soup = BeautifulSoup(html, "html.parser")
+        # Use same parser as parse_finn_boats for consistency
+        soup = BeautifulSoup(html, "lxml")
         scraped_at_ts = datetime.now(timezone.utc)
         page_ads = parse_finn_boats(html, scraped_at_ts)
         all_ads.extend(page_ads)

@@ -2,6 +2,7 @@ import random
 from typing import NamedTuple, List
 from dataclasses import dataclass
 import logging
+import os
 
 @dataclass
 class UserAgent:
@@ -72,10 +73,14 @@ class UserAgentManager:
         ]
 
     def get_random_agent(self) -> UserAgent:
-        """Returns a random user agent based on weights"""
+        """Returns a random user agent, preferring desktop unless SCRAPER_MOBILE=1."""
+        force_mobile = os.getenv("SCRAPER_MOBILE") == "1"
+        pool = self.agents if force_mobile else [a for a in self.agents if not a.mobile]
+        if not pool:  # fallback safety
+            pool = self.agents
         return random.choices(
-            self.agents,
-            weights=[agent.weight for agent in self.agents],
+            pool,
+            weights=[agent.weight for agent in pool],
             k=1
         )[0]
 
@@ -100,6 +105,5 @@ class UserAgentManager:
             "Sec-CH-UA-Mobile": "?1" if agent.mobile else "?0",
             "Sec-CH-UA-Platform": f'"{agent.platform}"',
         }
-        
-        logging.debug(f"Using User-Agent: {agent.string} ({agent.viewport})")
+        logging.info(f"Using UA (mobile={agent.mobile}, platform={agent.platform}): {agent.string}")
         return headers
