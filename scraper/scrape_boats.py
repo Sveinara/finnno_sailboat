@@ -10,7 +10,7 @@ from typing import List, Dict, Union
 from bs4.element import ResultSet, Tag
 import json
 from pathlib import Path
-from scraper.agent_manager import UserAgentManager
+from agent_manager import UserAgentManager
 
 # --- Konstanter for CSS Selektorer ---
 AD_ARTICLE_SELECTOR = "article.relative.isolate.sf-search-ad"

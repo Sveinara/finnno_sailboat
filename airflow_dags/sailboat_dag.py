@@ -5,8 +5,8 @@ from airflow.decorators import dag, task
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.operators.bash import BashOperator
 import logging
-# ✅ Import fra installert pip-pakke
-from finnno_sailboat.scraper.scrape_boats import get_boat_ads_data
+# ✅ Import direkte fra scraper-mappen som er på PYTHONPATH
+from scrape_boats import get_boat_ads_data
 
 @dag(
     dag_id='sailboat_dag', # Endret navnet for å markere at det er en ny versjon
