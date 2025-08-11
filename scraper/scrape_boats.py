@@ -4,6 +4,7 @@ from bs4 import BeautifulSoup
 import random
 import time
 import logging
+import os
 from urllib.parse import urlparse, parse_qs
 from datetime import datetime, timezone
 from typing import List, Dict, Union
@@ -252,6 +253,22 @@ def get_boat_ads_data(url: str, max_pages: int = 50, output_path: Path | None = 
         soup = BeautifulSoup(html, "lxml")
         scraped_at_ts = datetime.now(timezone.utc)
         page_ads = parse_finn_boats(html, scraped_at_ts)
+
+        # Fallback: hvis side 1 gir 0 annonser, prøv uten spesial-headere
+        if page == 1 and len(page_ads) == 0:
+            logging.info("Ingen annonser funnet med full headers. Prøver enkel forespørsel uten headers...")
+            try:
+                simple_html = requests.get(current_url, timeout=15).text
+                simple_soup = BeautifulSoup(simple_html, "lxml")
+                simple_ads = parse_finn_boats(simple_html, scraped_at_ts)
+                logging.info(f"Fallback fant {len(simple_ads)} annonser")
+                if len(simple_ads) > 0:
+                    html = simple_html
+                    soup = simple_soup
+                    page_ads = simple_ads
+            except Exception as e:
+                logging.warning(f"Fallback-feil: {e}")
+
         all_ads.extend(page_ads)
         
         logging.info(f"Hentet {len(page_ads)} annonser fra side {page}")
