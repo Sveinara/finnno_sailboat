@@ -26,7 +26,13 @@ def sailboat_dag():
 
     random_delay = BashOperator(
         task_id='random_delay',
-        bash_command='sleep $((RANDOM % 7200))'
+        bash_command="""
+if [ "{{ dag_run.conf.get('skip_delay', '0') }}" = "1" ]; then
+  echo 'Skipping delay';
+else
+  sleep $(( RANDOM % {{ dag_run.conf.get('max_delay', 7200) }} ));
+fi
+""",
     )
 
     @task(task_id="extract_all_boat_ads")
@@ -54,17 +60,22 @@ def sailboat_dag():
         """
         pg_hook = PostgresHook(postgres_conn_id='postgres_finn_db')
         
-        # Sørg for at schema og tabell finnes (fully-qualified)
+        # Sørg for at schema og tabell finnes (fully-qualified) og legg til manglende kolonner/indeks
         sql_create = """
         CREATE SCHEMA IF NOT EXISTS sailboat;
+        -- Minimal table to ensure it exists
         CREATE TABLE IF NOT EXISTS sailboat.staging_ads (
-            ad_id TEXT NOT NULL,
-            ad_url TEXT,
-            price INTEGER,
-            specs_text TEXT,
-            scraped_at TIMESTAMPTZ NOT NULL,
-            PRIMARY KEY (ad_id, scraped_at)
+            ad_id TEXT NOT NULL
         );
+        -- Add expected columns if missing
+        ALTER TABLE sailboat.staging_ads
+            ADD COLUMN IF NOT EXISTS ad_url TEXT,
+            ADD COLUMN IF NOT EXISTS price INTEGER,
+            ADD COLUMN IF NOT EXISTS specs_text TEXT,
+            ADD COLUMN IF NOT EXISTS scraped_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+        -- Ensure a uniqueness constraint for upsert behavior
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_staging_ads_adid_scraped_at
+            ON sailboat.staging_ads (ad_id, scraped_at);
         """
         pg_hook.run(sql_create)
         
