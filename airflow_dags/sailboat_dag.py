@@ -49,33 +49,39 @@ def sailboat_dag():
     @task(task_id="load_to_staging")
     def load_data(ads: list[dict]):
         """
-        Tar imot en liste med annonser og laster dem inn i
-        staging_ads-tabellen i Postgres.
-        Dette er L-steget (Load).
+        Lagrer kun: ad_id, ad_url, price, specs_text, scraped_at
+        i databasen 'postgres', schema 'sailboat', tabell 'staging_ads'.
         """
         pg_hook = PostgresHook(postgres_conn_id='postgres_finn_db')
         
-        # Her må vi oppdatere SQL-en til å matche de nye feltene dine!
-        # Slett den gamle staging_ads tabellen og lag denne nye.
+        # Sørg for at schema og tabell finnes (fully-qualified)
+        sql_create = """
+        CREATE SCHEMA IF NOT EXISTS sailboat;
+        CREATE TABLE IF NOT EXISTS sailboat.staging_ads (
+            ad_id TEXT NOT NULL,
+            ad_url TEXT,
+            price INTEGER,
+            specs_text TEXT,
+            scraped_at TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (ad_id, scraped_at)
+        );
+        """
+        pg_hook.run(sql_create)
+        
         sql_insert = """
-            INSERT INTO staging_ads (
-                ad_id, title, price, location, year, length_ft, motor_type,
-                motor_fuel, horsepower, speed_knots, seller_type, ad_url, scraped_at
-            ) VALUES (
-                %(ad_id)s, %(title)s, %(price)s, %(location)s, %(year)s, %(length_ft)s,
-                %(motor_type)s, %(motor_fuel)s, %(horsepower)s, %(speed_knots)s,
-                %(seller_type)s, %(ad_url)s, %(scraped_at)s
-            ) ON CONFLICT (ad_id, scraped_at) DO NOTHING;
+        INSERT INTO sailboat.staging_ads (
+            ad_id, ad_url, price, specs_text, scraped_at
+        ) VALUES (
+            %(ad_id)s, %(ad_url)s, %(price)s, %(specs_text)s, %(scraped_at)s
+        ) ON CONFLICT (ad_id, scraped_at) DO NOTHING;
         """
         
         inserted_count = 0
         for ad in ads:
-            # Kjør insert og få tilbake antall rader som ble påvirket
             result = pg_hook.run(sql_insert, parameters=ad, handler=lambda cursor: cursor.rowcount)
             if result > 0:
                 inserted_count += 1
-            
-        logging.info(f"Forsøkte å laste {len(ads)} annonser. {inserted_count} nye rader ble satt inn i staging_ads.")
+        logging.info(f"Forsøkte å laste {len(ads)} annonser. {inserted_count} nye rader ble satt inn i sailboat.staging_ads.")
 
     # Definerer rekkefølgen på oppgavene
     extracted_ads = extract_data()

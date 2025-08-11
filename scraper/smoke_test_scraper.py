@@ -52,12 +52,11 @@ def run_smoke(url: str, max_pages: Optional[int]) -> None:
     # Print a quick sample for manual sanity check
     for item in ads[:3]:
         logging.info(
-            "Sample ad: id=%s title=%s price=%s location=%s url=%s",
+            "Sample ad: id=%s price=%s url=%s specs=%s",
             item.get("ad_id"),
-            item.get("title"),
             item.get("price"),
-            item.get("location"),
             item.get("ad_url"),
+            item.get("specs_text"),
         )
 
 if __name__ == "__main__":

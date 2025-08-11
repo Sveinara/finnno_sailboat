@@ -16,12 +16,11 @@ from agent_manager import UserAgentManager
 # --- Konstanter for CSS Selektorer ---
 AD_ARTICLE_SELECTOR = "article.relative.isolate.sf-search-ad"
 LINK_SELECTOR = "a.sf-search-ad-link"
+# Behold tittel-selector, men vi bruker den ikke lenger
 TITLE_SELECTOR = "a.sf-search-ad-link span"
+# Specs beholdes og returneres som rå tekst
 SPECS_SELECTOR = "span.text-caption.font-bold.inline-block"
 PRICE_SELECTOR = "span.t3.font-bold.inline-block"
-# Update location and seller type selectors
-LOCATION_SELECTOR = "div.text-xs span.mr-8"
-SELLER_TYPE_SELECTOR = "div.text-xs span.mr-8:first-child"
 
 # CSS selector for the "next page" button/link - updated to match actual HTML structure
 NEXT_PAGE_SELECTOR = "a[rel='next']"
@@ -50,125 +49,71 @@ def fetch_html(url: str) -> str | None:
 def parse_finn_boats(html_content: str, scraped_at_ts: datetime) -> List[Dict[str, Union[str, int, datetime, None]]]:
     """
     Parser HTML fra Finn båt-resultatside.
-    Returnerer liste av dict med annonsefelter.
+    Returnerer liste av dict med kun: ad_id, ad_url, price, specs_text, scraped_at
     """
     try:
-        # Prefer lxml if installed for more robust parsing
-        parser = "lxml"
-        soup = BeautifulSoup(html_content, parser)
-        logging.debug(f"HTML innhold lengde: {len(html_content)}")
-        ads: ResultSet[Tag] = soup.select(AD_ARTICLE_SELECTOR)
-        logging.debug(f"Fant {len(ads)} annonser med selector: {AD_ARTICLE_SELECTOR}")
-        parsed_ads = []
-
-        for ad in ads:
+        # Parser-fallback: prøv lxml først, deretter html.parser
+        parsed_ads: list[dict] = []
+        last_error: Exception | None = None
+        for parser in ("lxml", "html.parser"):
             try:
-                # --- Hent ad_id og URL ---
-                link_tag = ad.select_one(LINK_SELECTOR)
-                url = link_tag.get("href") if link_tag else None
-                ad_id_val = link_tag.get("id", "") if link_tag else ""
-                if isinstance(ad_id_val, list):
-                    ad_id_val = "".join(ad_id_val)
-                ad_id = ad_id_val.replace("search-ad-", "") if ad_id_val else None
+                soup = BeautifulSoup(html_content, parser)
+                ads: ResultSet[Tag] = soup.select(AD_ARTICLE_SELECTOR)
+                logging.debug(f"[{parser}] Fant {len(ads)} annonser med selector: {AD_ARTICLE_SELECTOR}")
+                parsed_ads = []
 
-                # --- Hent tittel ---
-                title_tag = ad.select_one(TITLE_SELECTOR)
-                title = title_tag.get_text(strip=True) if title_tag else None
+                for ad in ads:
+                    try:
+                        # Lenke/ad_id
+                        link_tag = ad.select_one(LINK_SELECTOR)
+                        href = link_tag.get("href") if link_tag else None
+                        ad_id_val = link_tag.get("id", "") if link_tag else ""
+                        if isinstance(ad_id_val, list):
+                            ad_id_val = "".join(ad_id_val)
+                        ad_id = ad_id_val.replace("search-ad-", "") if ad_id_val else None
 
-                # --- Hent spesifikasjoner ---
-                specs_tag = ad.select_one(SPECS_SELECTOR)
-                specs_text = specs_tag.get_text(strip=True) if specs_tag else ""
-                
-                # Initialiser variabler
-                year = None
-                length_ft = None
-                motor_type = None
-                motor_fuel = None
-                horsepower = None
-                knots = None
+                        # Full URL
+                        ad_url: str | None = None
+                        if href:
+                            if href.startswith("http"):
+                                ad_url = href
+                            elif href.startswith("/"):
+                                ad_url = f"{BASE_URL}{href}"
+                            else:
+                                ad_url = href
 
-                # Parse specs_text (f.eks. "2017 • 46 fot • Diesel • Innenbords • 8 knop • 75 hk")
-                if specs_text:
-                    parts = [p.strip() for p in specs_text.split("∙")]
-                    for i, part in enumerate(parts):
-                        # År
-                        if i == 0 and part.isdigit() and len(part) == 4:
-                            year = int(part)
-                        
-                        # Lengde
-                        if "fot" in part:
-                            try:
-                                length_ft = float(part.replace("fot", "").strip())
-                            except ValueError:
-                                pass
-                        
-                        # Motor drivstoff
-                        if any(fuel in part.lower() for fuel in ["diesel", "bensin", "hybrid", "elektrisk"]):
-                            motor_fuel = part.strip()
-                        
-                        # Motor type
-                        if any(type_ in part.lower() for type_ in ["innenbords", "utenbords", "annet"]):
-                            motor_type = part.strip()
-                            
-                        # Hastighet
-                        if "knop" in part.lower():
-                            try:
-                                knots = float(part.split()[0])
-                            except (ValueError, IndexError):
-                                pass
-                        
-                        # Hestekrefter
-                        if "hk" in part.lower():
-                            try:
-                                hp_text = part.lower().replace("hk", "").strip()
-                                horsepower = float(hp_text)
-                            except ValueError:
-                                pass
+                        # Pris (som heltall om mulig)
+                        price_tag = ad.select_one(PRICE_SELECTOR)
+                        price_txt = price_tag.get_text(strip=True) if price_tag else ""
+                        try:
+                            price = int(''.join(filter(str.isdigit, price_txt))) if price_txt else None
+                        except (ValueError, TypeError):
+                            price = None
 
-                # --- Hent pris ---
-                price_tag = ad.select_one(PRICE_SELECTOR)
-                price_txt = price_tag.get_text(strip=True) if price_tag else ""
-                try:
-                    price = int(''.join(filter(str.isdigit, price_txt)))
-                except (ValueError, TypeError):
-                    price = None
+                        # Rå specs-tekst
+                        specs_tag = ad.select_one(SPECS_SELECTOR)
+                        specs_text = specs_tag.get_text(" ", strip=True) if specs_tag else ""
 
-                # --- Oppdatert logikk for seller type og location ---
-                seller_type = None
-                location = None
-                
-                seller_loc_tag = ad.select_one(LOCATION_SELECTOR)
-                if seller_loc_tag:
-                    location = seller_loc_tag.get_text(strip=True)
-                    
-                seller_type_tag = ad.select_one(SELLER_TYPE_SELECTOR)
-                if seller_type_tag:
-                    seller_text = seller_type_tag.get_text(strip=True).lower()
-                    if "forhandler" in seller_text:
-                        seller_type = "Forhandler"
-                    elif "privat" in seller_text:
-                        seller_type = "Privat"
+                        parsed_ads.append({
+                            "ad_id": ad_id,
+                            "ad_url": ad_url,
+                            "price": price,
+                            "specs_text": specs_text,
+                            "scraped_at": scraped_at_ts,
+                        })
+                    except Exception as e:
+                        logging.error(f"Feil ved parsing av annonse: {e}", exc_info=True)
 
-                parsed_ads.append({
-                    "ad_id": ad_id,
-                    "title": title,
-                    "price": price,
-                    "location": location,
-                    "year": year,
-                    "length_ft": length_ft,
-                    "motor_type": motor_type,
-                    "motor_fuel": motor_fuel,
-                    "horsepower": horsepower,
-                    "speed_knots": knots,
-                    "seller_type": seller_type,
-                    "ad_url": url,
-                    "scraped_at": scraped_at_ts
-                })
-
+                # Lyktes med denne parseren → returner
+                logging.info(f"Parser ({parser}) returnerer {len(parsed_ads)} annonser denne siden")
+                return parsed_ads
             except Exception as e:
-                logging.error(f"Feil ved parsing av annonse: {e}", exc_info=True)
-
-        logging.info(f"Parser returnerer {len(parsed_ads)} annonser denne siden")
+                last_error = e
+                logging.warning(f"Parser {parser} feilet: {e}")
+                continue
+        # Hvis begge feilet
+        if last_error:
+            raise last_error
         return parsed_ads
     
     except Exception as e:
@@ -195,21 +140,18 @@ def get_next_page_url(soup: BeautifulSoup, current_url: str) -> str | None:
 
         # Håndter relativ URL med query params
         if href.startswith("?"):
-            # Parse current URL to get base
             parsed_current = urlparse(current_url)
             base_url = f"{parsed_current.scheme}://{parsed_current.netloc}{parsed_current.path}"
             next_url = f"{base_url}{href}"
             logging.debug(f"Bygget next URL: {next_url}")
             return next_url
         elif href.startswith("/"):
-            # Absolute path
             parsed_current = urlparse(current_url)
             base_url = f"{parsed_current.scheme}://{parsed_current.netloc}"
             next_url = f"{base_url}{href}"
             logging.debug(f"Bygget next URL: {next_url}")
             return next_url
         elif href.startswith("http"):
-            # Full URL
             logging.debug(f"Full URL funnet: {href}")
             return href
         else:
@@ -233,10 +175,7 @@ def get_boat_ads_data(url: str, max_pages: int = 50, output_path: Path | None = 
     """
     Entry-point for Airflow.
     Henter og parser båtannonser fra gitt Finn.no-URL.
-    Args:
-        url: Start-URL for søket 
-        max_pages: Maks antall sider som skal hentes (default 50)
-        output_path: Sti til JSON-fil for lagring av resultater
+    Returnerer kun: ad_id, ad_url, price, specs_text, scraped_at
     """
     logging.info(f"Starter scraping for {url}")
     all_ads = []
@@ -252,9 +191,9 @@ def get_boat_ads_data(url: str, max_pages: int = 50, output_path: Path | None = 
         scraped_at_ts = datetime.now(timezone.utc)
         page_ads = parse_finn_boats(html, scraped_at_ts)
 
-        # Fallback: hvis side 1 gir 0 annonser, prøv uten spesial-headere
-        if page == 1 and len(page_ads) == 0:
-            logging.info("Ingen annonser funnet med full headers. Prøver enkel forespørsel uten headers...")
+        # Fallback: hvis 0 annonser, prøv enkel forespørsel uten headers
+        if len(page_ads) == 0:
+            logging.info("0 treff – prøver enkel forespørsel uten headers...")
             try:
                 simple_resp = requests.get(current_url, timeout=15)
                 simple_resp.raise_for_status()
@@ -270,7 +209,7 @@ def get_boat_ads_data(url: str, max_pages: int = 50, output_path: Path | None = 
         all_ads.extend(page_ads)
         logging.info(f"Hentet {len(page_ads)} annonser fra side {page}")
 
-        # Finn neste side hvis den finnes. Bruk tolerant parser for å unngå lxml-edgecases
+        # Finn neste side hvis den finnes (bruk tolerant parser for next-page)
         logging.debug(f"Søker etter neste side på side {page}")
         try:
             soup_for_next = BeautifulSoup(html, "html.parser")
@@ -298,17 +237,11 @@ def get_boat_ads_data(url: str, max_pages: int = 50, output_path: Path | None = 
         
     return all_ads
 
-# Eksempel på bruk:
+# Eksempelkjøring lokalt
 if __name__ == "__main__":
-    # Sett opp logging med DEBUG level
-    logging.basicConfig(
-        level=logging.DEBUG,  # Endret til DEBUG for mer info
-        format='%(asctime)s - %(levelname)s - %(message)s'
-    )
-    
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     url = "https://www.finn.no/mobility/search/boat?class=2188&sales_form=120"
-    output_dir = Path(__file__).parent.parent / "Data"
-    output_file = output_dir / f"sailboats_{datetime.now(timezone.utc):%Y%m%d_%H%M%S}.json"
-    
-    ads = get_boat_ads_data(url, output_path=output_file)
+    ads = get_boat_ads_data(url)
+    print(f"Antall annonser: {len(ads)}")
+    print(ads[:2])
 
