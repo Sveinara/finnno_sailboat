@@ -249,8 +249,6 @@ def get_boat_ads_data(url: str, max_pages: int = 50, output_path: Path | None = 
             logging.error(f"Kunne ikke hente HTML for side {page}.")
             break
 
-        # Use same parser as parse_finn_boats for consistency
-        soup = BeautifulSoup(html, "lxml")
         scraped_at_ts = datetime.now(timezone.utc)
         page_ads = parse_finn_boats(html, scraped_at_ts)
 
@@ -258,29 +256,35 @@ def get_boat_ads_data(url: str, max_pages: int = 50, output_path: Path | None = 
         if page == 1 and len(page_ads) == 0:
             logging.info("Ingen annonser funnet med full headers. Prøver enkel forespørsel uten headers...")
             try:
-                simple_html = requests.get(current_url, timeout=15).text
-                simple_soup = BeautifulSoup(simple_html, "lxml")
+                simple_resp = requests.get(current_url, timeout=15)
+                simple_resp.raise_for_status()
+                simple_html = simple_resp.text
                 simple_ads = parse_finn_boats(simple_html, scraped_at_ts)
                 logging.info(f"Fallback fant {len(simple_ads)} annonser")
                 if len(simple_ads) > 0:
                     html = simple_html
-                    soup = simple_soup
                     page_ads = simple_ads
             except Exception as e:
                 logging.warning(f"Fallback-feil: {e}")
 
         all_ads.extend(page_ads)
-        
         logging.info(f"Hentet {len(page_ads)} annonser fra side {page}")
-        
-        # Finn neste side hvis den finnes
+
+        # Finn neste side hvis den finnes. Bruk tolerant parser for å unngå lxml-edgecases
         logging.debug(f"Søker etter neste side på side {page}")
-        current_url = get_next_page_url(soup, current_url)
-        if not current_url:
+        try:
+            soup_for_next = BeautifulSoup(html, "html.parser")
+            next_url = get_next_page_url(soup_for_next, current_url)
+        except Exception as e:
+            logging.warning(f"Klarte ikke å parse next-page med html.parser: {e}")
+            next_url = None
+
+        if not next_url:
             logging.info(f"Ingen neste side funnet på side {page}")
             break
         else:
-            logging.info(f"Fant neste side: {current_url}")
+            logging.info(f"Fant neste side: {next_url}")
+            current_url = next_url
             
         page += 1
         if page > max_pages:
