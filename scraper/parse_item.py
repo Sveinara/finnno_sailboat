@@ -358,13 +358,16 @@ def _extract_from_dom_fallback(soup: BeautifulSoup) -> Dict[str, Any]:
         return node.get_text(strip=True) if node else None
 
     # Tittel
-    h1 = soup.select_one('h1')
+    h1 = soup.select_one('h1, h1.t1')
     if h1:
         data['title'] = _text(h1)
 
     # Pris (finn p med tekst Pris og h2 rett etter)
     for p in soup.find_all('p'):
-        if _text(p) and _text(p).lower() == 'pris':
+        txtp = _text(p)
+        if not txtp:
+            continue
+        if txtp.strip().lower() == 'pris':
             container = p.parent
             if container:
                 h2 = container.find('h2')
@@ -379,6 +382,47 @@ def _extract_from_dom_fallback(soup: BeautifulSoup) -> Dict[str, Any]:
                             except Exception:
                                 pass
             break
+    # Ekstra fallback: direkte span.t2 inneholder ofte pris
+    if 'price' not in data or data.get('price') is None:
+        t2 = soup.select_one('span.t2')
+        if t2:
+            price_txt = _text(t2)
+            if price_txt:
+                digits = ''.join(ch for ch in price_txt if ch.isdigit())
+                if digits:
+                    try:
+                        data['price'] = int(digits)
+                        data['currency'] = 'NOK'
+                    except Exception:
+                        pass
+
+    # Oversikts-grid: label (p eller label) med klasse s-text-subtle + verdi i p.font-bold
+    label_nodes = soup.select('label.s-text-subtle, p.s-text-subtle')
+    label_map = {
+        'modellår': 'year',
+        'type motor': 'engine_type',
+        'seter': 'seats',
+        'lengde': 'length_text',  # vi lagrer tekst (f.eks. "28 fot") hvis vi vil utlede senere
+    }
+    for lbl in label_nodes:
+        key = (_text(lbl) or '').strip().lower()
+        mapped = label_map.get(key)
+        if not mapped:
+            continue
+        parent = lbl.parent
+        if not parent:
+            continue
+        val_p = parent.find('p', class_=lambda c: c and 'font-bold' in c)
+        val = _text(val_p)
+        if not val:
+            continue
+        if mapped in {'year', 'seats'}:
+            try:
+                data[mapped] = int(''.join(ch for ch in val if ch.isdigit()))
+            except Exception:
+                pass
+        else:
+            data[mapped] = val
 
     # Spesifikasjoner via dt/dd
     dt_to_key = {
@@ -395,6 +439,11 @@ def _extract_from_dom_fallback(soup: BeautifulSoup) -> Dict[str, Any]:
         'sitteplasser': 'seats',
         'topphastighet': 'boat_max_speed_knots',
         'registreringsnummer': 'registration_number',
+        'lengde i fot': 'length_ft',
+        'drivstoff': 'fuel_type',
+        'type': 'boat_type',
+        'farge': 'color',
+        'båtens beliggenhet': 'country_name',
     }
     # Finn alle dt/dd par
     for dl in soup.find_all('dl'):
@@ -412,7 +461,7 @@ def _extract_from_dom_fallback(soup: BeautifulSoup) -> Dict[str, Any]:
             if not mapped:
                 continue
             # Normaliser tallfelter
-            if mapped in {'year', 'engine_effect_hp', 'width_cm', 'depth_cm', 'sleepers', 'seats', 'boat_max_speed_knots'}:
+            if mapped in {'year', 'engine_effect_hp', 'width_cm', 'depth_cm', 'sleepers', 'seats', 'boat_max_speed_knots', 'length_ft'}:
                 try:
                     num = int(''.join(ch for ch in val_raw if ch.isdigit()))
                 except Exception:
@@ -421,28 +470,49 @@ def _extract_from_dom_fallback(soup: BeautifulSoup) -> Dict[str, Any]:
             else:
                 data[mapped] = val_raw
 
-    # FINN-kode og Sist endret
-    for wrapper in soup.find_all('div'):
-        labels = wrapper.find_all('p')
-        if not labels:
+    # Annonseinformasjon: par av p.s-text-subtle (label) + p.font-bold (verdi)
+    # Først forsøk innenfor containere
+    for wrap in soup.select('div .text-m, div.text-m'):
+        # se etter under-diver med to p'er
+        pairs = wrap.select('div > p.s-text-subtle, div > p.font-bold')
+        if not pairs:
             continue
-        for idx, p in enumerate(labels):
-            txt = _text(p)
-            if not txt:
+        # iterer direkte barn med p.s-text-subtle
+        for container in wrap.find_all('div', recursive=False):
+            lbl = container.find('p', class_=lambda c: c and 's-text-subtle' in c)
+            val = container.find('p', class_=lambda c: c and 'font-bold' in c)
+            lbl_txt = _text(lbl)
+            val_txt = _text(val)
+            if not lbl_txt or not val_txt:
                 continue
-            txt_l = txt.lower()
-            # FINN-kode
-            if 'finn-kode' in txt_l and idx + 1 < len(labels):
-                val = _text(labels[idx + 1])
-                if val and val.isdigit():
-                    data['ad_id'] = val
-            # Sist endret
-            if 'sist endret' in txt_l and idx + 1 < len(labels):
-                val = _text(labels[idx + 1])
-                if val:
-                    parsed = _parse_last_edited_no(val)
-                    if parsed:
-                        data['last_edited_at'] = parsed
+            lbl_l = lbl_txt.strip().lower()
+            if 'finn-kode' in lbl_l and val_txt.isdigit():
+                data['ad_id'] = val_txt
+            elif 'sist endret' in lbl_l:
+                parsed = _parse_last_edited_no(val_txt)
+                if parsed:
+                    data['last_edited_at'] = parsed
+    # Deretter global fallback: enhver p.s-text-subtle etterfulgt av nærmeste p.font-bold i DOM
+    for lbl in soup.select('p.s-text-subtle'):
+        lbl_txt = _text(lbl)
+        if not lbl_txt:
+            continue
+        lbl_l = lbl_txt.strip().lower()
+        nxt = lbl.find_next('p')
+        # gå fremover til vi finner en font-bold
+        while nxt and not (nxt.has_attr('class') and any('font-bold' in cls for cls in (nxt.get('class') or []))):
+            nxt = nxt.find_next('p')
+        if not nxt:
+            continue
+        val_txt = _text(nxt)
+        if not val_txt:
+            continue
+        if 'finn-kode' in lbl_l and val_txt.isdigit():
+            data['ad_id'] = val_txt
+        elif 'sist endret' in lbl_l:
+            parsed = _parse_last_edited_no(val_txt)
+            if parsed:
+                data['last_edited_at'] = parsed
 
     # Sted: map-lenke med lat/lon/postalCode
     sted_section = None
@@ -469,7 +539,7 @@ def _extract_from_dom_fallback(soup: BeautifulSoup) -> Dict[str, Any]:
                         data['lng'] = float(lon)
                     except Exception:
                         pass
-                if postal and postal.isdigit():
+                if postal and isinstance(postal, str) and postal.isdigit():
                     data['postal_code'] = postal
             except Exception:
                 pass
