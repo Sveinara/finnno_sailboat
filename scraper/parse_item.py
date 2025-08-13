@@ -52,7 +52,8 @@ def _extract_from_data_props(soup: BeautifulSoup) -> Dict[str, Any]:
     data: Dict[str, Any] = {}
     root = soup.select_one('#mobility-item-page-root')
     if not root:
-        return data
+        # Fallback: forsøk alle elementer med data-props
+        return _extract_from_any_data_props(soup)
     dp_raw = root.get('data-props')
     dp_obj = _safe_json_loads(dp_raw) if isinstance(dp_raw, str) else None
     if not isinstance(dp_obj, dict):
@@ -149,6 +150,147 @@ def _extract_from_data_props(soup: BeautifulSoup) -> Dict[str, Any]:
         data['price'] = int(price)
         data['currency'] = 'NOK'
 
+    return data
+
+
+def _extract_from_any_data_props(soup: BeautifulSoup) -> Dict[str, Any]:
+    """Finn og bruk første beste data-props-blokk som inneholder ad/adData."""
+    data: Dict[str, Any] = {}
+    nodes = soup.find_all(attrs={"data-props": True})
+    for node in nodes:
+        dp_raw = node.get('data-props')
+        dp_obj = _safe_json_loads(dp_raw) if isinstance(dp_raw, str) else None
+        if not isinstance(dp_obj, dict):
+            continue
+        ad_candidate = (
+            dp_obj.get('adData') if isinstance(dp_obj.get('adData'), dict) else (
+                dp_obj.get('ad') if isinstance(dp_obj.get('ad'), dict) else None
+            )
+        )
+        ad = ad_candidate if isinstance(ad_candidate, dict) else None
+        if not isinstance(ad, dict):
+            continue
+        # Rebruk felt-utledning som i _extract_from_data_props ved å lage en mini-soup med denne noden
+        # eller kopiere utledningen direkte (kopierer direkte her for enkelhet og for å returnere tidlig når vi fant én)
+        try:
+            # Grunnfelter
+            data['title'] = ad.get('title') or dp_obj.get('title')
+            data['year'] = ad.get('year') or dp_obj.get('year')
+            data['make'] = (ad.get('make') or {}).get('value') if isinstance(ad.get('make'), dict) else ad.get('make')
+            data['model'] = ad.get('model') or (ad.get('boat_model') if isinstance(ad, dict) else None)
+            # Motor
+            motor = ad.get('motor') if isinstance(ad.get('motor'), dict) else {}
+            data['engine_make'] = motor.get('make') or ad.get('engine_make')
+            mtype = motor.get('type') or ad.get('motor_type')
+            data['engine_type'] = mtype.get('value') if isinstance(mtype, dict) else mtype
+            meffect = motor.get('size') or ad.get('engine_effect')
+            try:
+                if isinstance(meffect, (int, float)):
+                    data['engine_effect_hp'] = int(meffect)
+                elif isinstance(meffect, str) and meffect.strip():
+                    data['engine_effect_hp'] = int(''.join(ch for ch in meffect if ch.isdigit()))
+            except Exception:
+                pass
+            # Tallfelter
+            def _as_int(val):
+                try:
+                    if isinstance(val, (int, float)):
+                        return int(val)
+                    if isinstance(val, str) and val.strip():
+                        return int(''.join(ch for ch in val if ch.isdigit()))
+                except Exception:
+                    return None
+                return None
+            data['width_cm'] = _as_int(ad.get('width') or ad.get('width_cm'))
+            data['depth_cm'] = _as_int(ad.get('depth') or ad.get('depth_cm'))
+            data['sleepers'] = _as_int(ad.get('sleepers'))
+            data['seats'] = _as_int(ad.get('seats'))
+            data['weight_kg'] = _as_int(ad.get('weight') or ad.get('weight_kg'))
+            # Material
+            material = ad.get('material')
+            data['material'] = material.get('value') if isinstance(material, dict) else material
+            # Max speed
+            data['boat_max_speed_knots'] = _as_int(ad.get('boat_max_speed'))
+            # Registrering
+            data['registration_number'] = ad.get('registration_number')
+            # Lokasjon
+            loc = ad.get('location') if isinstance(ad.get('location'), dict) else {}
+            pos = loc.get('position') if isinstance(loc.get('position'), dict) else {}
+            data['lat'] = pos.get('lat')
+            data['lng'] = pos.get('lng')
+            data['postal_code'] = loc.get('postalCode') or loc.get('postal_code')
+            data['municipality'] = loc.get('postName') or loc.get('municipality')
+            data['county'] = loc.get('county')
+            # Beskrivelse og redigert
+            data['description'] = ad.get('description') or dp_obj.get('description')
+            data['last_edited_at'] = _parse_dt(ad.get('edited') or dp_obj.get('edited'))
+            # Pris
+            price = ad.get('price') or (ad.get('priceInfo') if isinstance(ad.get('priceInfo'), dict) else None)
+            if isinstance(price, dict):
+                try:
+                    data['price'] = int(price.get('amount')) if price.get('amount') is not None else None
+                except Exception:
+                    data['price'] = None
+                data['currency'] = price.get('currency') or 'NOK'
+            elif isinstance(price, (int, float)):
+                data['price'] = int(price)
+                data['currency'] = 'NOK'
+            return data
+        except Exception:
+            continue
+    return data
+
+
+def _extract_from_json_ld(soup: BeautifulSoup) -> Dict[str, Any]:
+    """Forsøk å hente tittel, pris, valuta, merke, modell, postnummer fra JSON-LD."""
+    data: Dict[str, Any] = {}
+    for script in soup.find_all('script', attrs={'type': 'application/ld+json'}):
+        try:
+            jb = json.loads(script.string or script.text or '')
+        except Exception:
+            continue
+        # Noen sider har liste av JSON-LD blokker i én script
+        candidates = jb if isinstance(jb, list) else [jb]
+        for obj in candidates:
+            if not isinstance(obj, dict):
+                continue
+            # Tittel
+            if not data.get('title'):
+                name = obj.get('name') or obj.get('headline')
+                if isinstance(name, str):
+                    data['title'] = name
+            # Pris
+            offers = obj.get('offers') if isinstance(obj.get('offers'), dict) else None
+            if offers:
+                price = offers.get('price')
+                currency = offers.get('priceCurrency') or offers.get('currency')
+                try:
+                    data['price'] = int(price) if price is not None else data.get('price')
+                except Exception:
+                    pass
+                if currency and isinstance(currency, str):
+                    data['currency'] = currency
+            # Merke og modell
+            brand = obj.get('brand')
+            if isinstance(brand, dict) and not data.get('make'):
+                bname = brand.get('name')
+                if isinstance(bname, str):
+                    data['make'] = bname
+            if not data.get('model') and isinstance(obj.get('model'), (str, int)):
+                data['model'] = obj.get('model')
+            # Adresse/postnummer
+            address = obj.get('address') if isinstance(obj.get('address'), dict) else None
+            if address and not data.get('postal_code'):
+                pc = address.get('postalCode') or address.get('postal_code')
+                if isinstance(pc, str) and pc.isdigit():
+                    data['postal_code'] = pc
+        if data:
+            break
+    # Meta fallback for tittel
+    if not data.get('title'):
+        meta = soup.select_one('meta[property="og:title"]')
+        if meta and meta.get('content'):
+            data['title'] = meta.get('content')
     return data
 
 
@@ -395,10 +537,11 @@ def parse_item_html(html: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     pack_data_props = _extract_from_data_props(soup)
     pack_contact = _extract_from_contact_button(soup)
     pack_adv = _extract_from_advertising(soup)
+    pack_jsonld = _extract_from_json_ld(soup)
     pack_dom = _extract_from_dom_fallback(soup)
 
     merged: Dict[str, Any] = {}
-    for src in (pack_data_props, pack_adv, pack_contact, pack_dom):
+    for src in (pack_data_props, pack_adv, pack_contact, pack_jsonld, pack_dom):
         for k, v in (src or {}).items():
             if v is not None and (k not in merged or merged[k] in (None, '', [])):
                 merged[k] = v
@@ -434,6 +577,7 @@ def parse_item_html(html: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         'data_props': pack_data_props,
         'contact': pack_contact,
         'advertising': pack_adv,
+        'jsonld': pack_jsonld,
         'dom': pack_dom,
     }
     return merged, source_pack
