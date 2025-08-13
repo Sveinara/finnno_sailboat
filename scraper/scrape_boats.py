@@ -11,7 +11,7 @@ from typing import List, Dict, Union
 from bs4.element import ResultSet, Tag
 import json
 from pathlib import Path
-from agent_manager import UserAgentManager
+from scraper.agent_manager import UserAgentManager
 
 # --- Konstanter for CSS Selektorer ---
 AD_ARTICLE_SELECTOR = "article.relative.isolate.sf-search-ad"
@@ -76,7 +76,10 @@ def parse_finn_boats(html_content: str, scraped_at_ts: datetime) -> List[Dict[st
                     try:
                         # Lenke/ad_id
                         link_tag = ad.select_one(LINK_SELECTOR)
-                        href = link_tag.get("href") if link_tag else None
+                        href_val = link_tag.get("href") if link_tag else None
+                        if isinstance(href_val, list):
+                            href_val = href_val[0] if href_val else None
+                        href = href_val if isinstance(href_val, str) else None
                         ad_id_val = link_tag.get("id", "") if link_tag else ""
                         if isinstance(ad_id_val, list):
                             ad_id_val = "".join(ad_id_val)
@@ -84,7 +87,7 @@ def parse_finn_boats(html_content: str, scraped_at_ts: datetime) -> List[Dict[st
 
                         # Full URL
                         ad_url: str | None = None
-                        if href:
+                        if isinstance(href, str):
                             if href.startswith("http"):
                                 ad_url = href
                             elif href.startswith("/"):
