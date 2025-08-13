@@ -386,7 +386,11 @@ def parse_item_html(html: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Returnerer (normaliserte felt, source_pack) fra HTML.
     source_pack inneholder råutdragene for re-prosessering.
     """
-    soup = BeautifulSoup(html, 'lxml')
+    try:
+        soup = BeautifulSoup(html, 'lxml')
+    except Exception:
+        logging.warning("lxml-parser feilet, faller tilbake til html.parser")
+        soup = BeautifulSoup(html, 'html.parser')
 
     pack_data_props = _extract_from_data_props(soup)
     pack_contact = _extract_from_contact_button(soup)
