@@ -27,6 +27,15 @@ def _safe_json_loads(raw: str) -> Optional[dict]:
     return None
 
 
+def _as_str_attr(val: Any) -> Optional[str]:
+    """Normaliser BeautifulSoup-attributt som kan være str eller list[str] til str."""
+    if isinstance(val, str):
+        return val
+    if isinstance(val, list) and val and isinstance(val[0], str):
+        return val[0]
+    return None
+
+
 def _parse_dt(val: Any) -> Optional[datetime]:
     """Forsøk å parse tidspunkt fra ulike formater til aware datetime (UTC)."""
     try:
@@ -51,13 +60,20 @@ def _extract_from_data_props(soup: BeautifulSoup) -> Dict[str, Any]:
     root = soup.select_one('#mobility-item-page-root')
     if not root:
         return data
-    dp_raw = root.get('data-props')
+    # data-props kan være str eller list[str]
+    dp_attr = root.get('data-props')
+    dp_raw: Optional[str] = None
+    if isinstance(dp_attr, str):
+        dp_raw = dp_attr
+    elif isinstance(dp_attr, list) and dp_attr and isinstance(dp_attr[0], str):
+        dp_raw = dp_attr[0]
     dp = _safe_json_loads(dp_raw) if dp_raw else None
     if not isinstance(dp, dict):
         return data
 
     # Noen felt ligger under adData/ad, andre flatt – vær tolerant
-    ad = dp.get('adData') or dp.get('ad') or dp
+    ad_candidate = dp.get('adData') or dp.get('ad') or dp
+    ad: Dict[str, Any] = ad_candidate if isinstance(ad_candidate, dict) else {}
 
     # Grunnfelter
     data['title'] = ad.get('title') or dp.get('title')
@@ -193,7 +209,24 @@ def parse_item_html(html: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Returnerer (normaliserte felt, source_pack) fra HTML.
     source_pack inneholder råutdragene for re-prosessering.
     """
-    soup = BeautifulSoup(html, 'lxml')
+    # Robust parser-fallback
+    soup = None
+    last_err: Optional[Exception] = None
+    for parser in ('lxml', 'html.parser', 'html5lib'):
+        try:
+            soup = BeautifulSoup(html, parser)
+            break
+        except Exception as e:
+            last_err = e
+            logging.debug(f"BeautifulSoup parser {parser} feilet: {e}")
+    if soup is None:
+        logging.error(f"Alle BeautifulSoup-parsere feilet for item HTML: {last_err}")
+        raise last_err if last_err else RuntimeError("Kunne ikke parse HTML")
+
+    # Gating-deteksjon (mangler forventede noder)
+    if not (soup.select_one('#mobility-item-page-root') or soup.select_one('#advertising-initial-state') or soup.select_one('#contact-button-data')):
+        title = (soup.title.string.strip() if soup.title and soup.title.string else None)
+        logging.warning(f"Mistenker gated/lett respons: fant ikke forventede noder. title={title!r} size={len(html)}")
 
     pack_data_props = _extract_from_data_props(soup)
     pack_contact = _extract_from_contact_button(soup)
@@ -207,10 +240,10 @@ def parse_item_html(html: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
     if not merged.get('ad_id'):
         link = soup.select_one('link[rel="canonical"]')
-        href = link.get('href') if link else None
+        href = _as_str_attr(link.get('href')) if link else None
         if not href:
             meta = soup.select_one('meta[property="og:url"]')
-            href = meta.get('content') if meta else None
+            href = _as_str_attr(meta.get('content')) if meta else None
         if href and href.rstrip('/').split('/')[-1].isdigit():
             merged['ad_id'] = href.rstrip('/').split('/')[-1]
 
