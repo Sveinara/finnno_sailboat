@@ -4,7 +4,7 @@ from __future__ import annotations
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse, parse_qs
 import json
 import logging
 
@@ -12,11 +12,13 @@ import logging
 from .scrape_boats import fetch_html
 
 
-def _safe_json_loads(raw: str) -> Optional[dict]:
+def _safe_json_loads(raw: Any) -> Optional[dict]:
     """Prøv å dekode en data-props streng til JSON.
     Forsøker url-unquote 0-2 ganger før json.loads.
     """
     if not raw:
+        return None
+    if not isinstance(raw, str):
         return None
     candidates = [raw, unquote(raw), unquote(unquote(raw))]
     for i, cand in enumerate(candidates):
@@ -24,15 +26,6 @@ def _safe_json_loads(raw: str) -> Optional[dict]:
             return json.loads(cand)
         except Exception:
             continue
-    return None
-
-
-def _as_str_attr(val: Any) -> Optional[str]:
-    """Normaliser BeautifulSoup-attributt som kan være str eller list[str] til str."""
-    if isinstance(val, str):
-        return val
-    if isinstance(val, list) and val and isinstance(val[0], str):
-        return val[0]
     return None
 
 
@@ -60,24 +53,22 @@ def _extract_from_data_props(soup: BeautifulSoup) -> Dict[str, Any]:
     root = soup.select_one('#mobility-item-page-root')
     if not root:
         return data
-    # data-props kan være str eller list[str]
-    dp_attr = root.get('data-props')
-    dp_raw: Optional[str] = None
-    if isinstance(dp_attr, str):
-        dp_raw = dp_attr
-    elif isinstance(dp_attr, list) and dp_attr and isinstance(dp_attr[0], str):
-        dp_raw = dp_attr[0]
-    dp = _safe_json_loads(dp_raw) if dp_raw else None
-    if not isinstance(dp, dict):
-        return data
+    dp_raw = root.get('data-props')
+    dp_obj = _safe_json_loads(dp_raw) if isinstance(dp_raw, str) else None
+    if not isinstance(dp_obj, dict):
+        dp_obj = {}
 
     # Noen felt ligger under adData/ad, andre flatt – vær tolerant
-    ad_candidate = dp.get('adData') or dp.get('ad') or dp
+    ad_candidate = (
+        dp_obj.get('adData') if isinstance(dp_obj.get('adData'), dict) else (
+            dp_obj.get('ad') if isinstance(dp_obj.get('ad'), dict) else dp_obj
+        )
+    )
     ad: Dict[str, Any] = ad_candidate if isinstance(ad_candidate, dict) else {}
 
     # Grunnfelter
-    data['title'] = ad.get('title') or dp.get('title')
-    data['year'] = ad.get('year') or dp.get('year')
+    data['title'] = ad.get('title') or dp_obj.get('title')
+    data['year'] = ad.get('year') or dp_obj.get('year')
     data['make'] = (ad.get('make') or {}).get('value') if isinstance(ad.get('make'), dict) else ad.get('make')
     data['model'] = ad.get('model') or (ad.get('boat_model') if isinstance(ad, dict) else None)
 
@@ -127,7 +118,7 @@ def _extract_from_data_props(soup: BeautifulSoup) -> Dict[str, Any]:
 
     # Lokasjon
     loc = ad.get('location') if isinstance(ad.get('location'), dict) else {}
-    pos = loc.get('position') or {}
+    pos = loc.get('position') if isinstance(loc.get('position'), dict) else {}
     data['lat'] = pos.get('lat')
     data['lng'] = pos.get('lng')
 
@@ -137,14 +128,26 @@ def _extract_from_data_props(soup: BeautifulSoup) -> Dict[str, Any]:
     data['county'] = loc.get('county')
 
     # Beskrivelse
-    data['description'] = ad.get('description') or dp.get('description')
+    data['description'] = ad.get('description') or dp_obj.get('description')
 
     # Bilder (prøv enkel liste om finnes)
     imgs = ad.get('images') if isinstance(ad.get('images'), list) else []
     data['images'] = imgs
 
     # Potensielt redigeringsinfo
-    data['last_edited_at'] = _parse_dt(ad.get('edited') or dp.get('edited'))
+    data['last_edited_at'] = _parse_dt(ad.get('edited') or dp_obj.get('edited'))
+
+    # Pris
+    price = ad.get('price') or (ad.get('priceInfo') if isinstance(ad.get('priceInfo'), dict) else None)
+    if isinstance(price, dict):
+        try:
+            data['price'] = int(price.get('amount')) if price.get('amount') is not None else None
+        except Exception:
+            data['price'] = None
+        data['currency'] = price.get('currency') or 'NOK'
+    elif isinstance(price, (int, float)):
+        data['price'] = int(price)
+        data['currency'] = 'NOK'
 
     return data
 
@@ -205,45 +208,203 @@ def _extract_from_advertising(soup: BeautifulSoup) -> Dict[str, Any]:
         return data
 
 
+def _extract_from_dom_fallback(soup: BeautifulSoup) -> Dict[str, Any]:
+    """Fallback som henter felter fra synlig DOM når JSON er utilgjengelig."""
+    data: Dict[str, Any] = {}
+
+    def _text(node):
+        return node.get_text(strip=True) if node else None
+
+    # Tittel
+    h1 = soup.select_one('h1')
+    if h1:
+        data['title'] = _text(h1)
+
+    # Pris (finn p med tekst Pris og h2 rett etter)
+    for p in soup.find_all('p'):
+        if _text(p) and _text(p).lower() == 'pris':
+            container = p.parent
+            if container:
+                h2 = container.find('h2')
+                if h2:
+                    price_txt = _text(h2)
+                    if price_txt:
+                        digits = ''.join(ch for ch in price_txt if ch.isdigit())
+                        if digits:
+                            try:
+                                data['price'] = int(digits)
+                                data['currency'] = 'NOK'
+                            except Exception:
+                                pass
+            break
+
+    # Spesifikasjoner via dt/dd
+    dt_to_key = {
+        'modellår': 'year',
+        'merke': 'make',
+        'modell': 'model',
+        'type motor': 'engine_type',
+        'motorfabrikant': 'engine_make',
+        'motorstørrelse': 'engine_effect_hp',
+        'byggemateriale': 'material',
+        'bredde': 'width_cm',
+        'dybde': 'depth_cm',
+        'soveplasser': 'sleepers',
+        'sitteplasser': 'seats',
+        'topphastighet': 'boat_max_speed_knots',
+        'registreringsnummer': 'registration_number',
+    }
+    # Finn alle dt/dd par
+    for dl in soup.find_all('dl'):
+        for div in dl.find_all('div'):
+            dt = div.find('dt')
+            dd = div.find('dd')
+            if not dt or not dd:
+                continue
+            key_raw = _text(dt)
+            val_raw = _text(dd)
+            if not key_raw or not val_raw:
+                continue
+            key = key_raw.strip().lower()
+            mapped = dt_to_key.get(key)
+            if not mapped:
+                continue
+            # Normaliser tallfelter
+            if mapped in {'year', 'engine_effect_hp', 'width_cm', 'depth_cm', 'sleepers', 'seats', 'boat_max_speed_knots'}:
+                try:
+                    num = int(''.join(ch for ch in val_raw if ch.isdigit()))
+                except Exception:
+                    num = None
+                data[mapped] = num
+            else:
+                data[mapped] = val_raw
+
+    # FINN-kode og Sist endret
+    for wrapper in soup.find_all('div'):
+        labels = wrapper.find_all('p')
+        if not labels:
+            continue
+        for idx, p in enumerate(labels):
+            txt = _text(p)
+            if not txt:
+                continue
+            txt_l = txt.lower()
+            # FINN-kode
+            if 'finn-kode' in txt_l and idx + 1 < len(labels):
+                val = _text(labels[idx + 1])
+                if val and val.isdigit():
+                    data['ad_id'] = val
+            # Sist endret
+            if 'sist endret' in txt_l and idx + 1 < len(labels):
+                val = _text(labels[idx + 1])
+                if val:
+                    parsed = _parse_last_edited_no(val)
+                    if parsed:
+                        data['last_edited_at'] = parsed
+
+    # Sted: map-lenke med lat/lon/postalCode
+    sted_section = None
+    for h2 in soup.find_all('h2'):
+        if _text(h2) and _text(h2).strip().lower() == 'sted':
+            sted_section = h2.parent
+            break
+    if sted_section:
+        a = sted_section.find('a', href=True)
+        if a and a['href']:
+            try:
+                parsed = urlparse(a['href'])
+                qs = parse_qs(parsed.query)
+                lat = (qs.get('lat') or [None])[0]
+                lon = (qs.get('lon') or [None])[0]
+                postal = (qs.get('postalCode') or [None])[0]
+                if lat:
+                    try:
+                        data['lat'] = float(lat)
+                    except Exception:
+                        pass
+                if lon:
+                    try:
+                        data['lng'] = float(lon)
+                    except Exception:
+                        pass
+                if postal and postal.isdigit():
+                    data['postal_code'] = postal
+            except Exception:
+                pass
+
+    return data
+
+
+def _parse_last_edited_no(val: str) -> Optional[datetime]:
+    """Parse norsk datoformat som '10. august 2025, 21:23' til UTC datetime."""
+    try:
+        s = val.strip().lower()
+        # Fjern punktum etter dag
+        s = s.replace('\xa0', ' ')
+        parts = s.split(',')
+        date_part = parts[0].strip() if parts else s
+        time_part = parts[1].strip() if len(parts) > 1 else None
+        # date_part forventet: '10. august 2025'
+        tokens = date_part.replace('.', '').split()
+        if len(tokens) < 3:
+            return None
+        day = int(tokens[0])
+        month_name = tokens[1]
+        year = int(tokens[2])
+        months = {
+            'januar': 1,
+            'februar': 2,
+            'mars': 3,
+            'april': 4,
+            'mai': 5,
+            'juni': 6,
+            'juli': 7,
+            'august': 8,
+            'september': 9,
+            'oktober': 10,
+            'november': 11,
+            'desember': 12,
+        }
+        month = months.get(month_name)
+        if not month:
+            return None
+        hour = 0
+        minute = 0
+        if time_part:
+            try:
+                hour = int(time_part.split(':')[0])
+                minute = int(time_part.split(':')[1])
+            except Exception:
+                pass
+        dt = datetime(year, month, day, hour, minute, tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
 def parse_item_html(html: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Returnerer (normaliserte felt, source_pack) fra HTML.
     source_pack inneholder råutdragene for re-prosessering.
     """
-    # Robust parser-fallback
-    soup = None
-    last_err: Optional[Exception] = None
-    for parser in ('lxml', 'html.parser', 'html5lib'):
-        try:
-            soup = BeautifulSoup(html, parser)
-            break
-        except Exception as e:
-            last_err = e
-            logging.debug(f"BeautifulSoup parser {parser} feilet: {e}")
-    if soup is None:
-        logging.error(f"Alle BeautifulSoup-parsere feilet for item HTML: {last_err}")
-        raise last_err if last_err else RuntimeError("Kunne ikke parse HTML")
-
-    # Gating-deteksjon (mangler forventede noder)
-    if not (soup.select_one('#mobility-item-page-root') or soup.select_one('#advertising-initial-state') or soup.select_one('#contact-button-data')):
-        title = (soup.title.string.strip() if soup.title and soup.title.string else None)
-        logging.warning(f"Mistenker gated/lett respons: fant ikke forventede noder. title={title!r} size={len(html)}")
+    soup = BeautifulSoup(html, 'lxml')
 
     pack_data_props = _extract_from_data_props(soup)
     pack_contact = _extract_from_contact_button(soup)
     pack_adv = _extract_from_advertising(soup)
+    pack_dom = _extract_from_dom_fallback(soup)
 
     merged: Dict[str, Any] = {}
-    for src in (pack_data_props, pack_adv, pack_contact):
+    for src in (pack_data_props, pack_adv, pack_contact, pack_dom):
         for k, v in (src or {}).items():
             if v is not None and (k not in merged or merged[k] in (None, '', [])):
                 merged[k] = v
 
     if not merged.get('ad_id'):
         link = soup.select_one('link[rel="canonical"]')
-        href = _as_str_attr(link.get('href')) if link else None
+        href = link.get('href') if link else None
         if not href:
             meta = soup.select_one('meta[property="og:url"]')
-            href = _as_str_attr(meta.get('content')) if meta else None
+            href = meta.get('content') if meta else None
         if href and href.rstrip('/').split('/')[-1].isdigit():
             merged['ad_id'] = href.rstrip('/').split('/')[-1]
 
@@ -257,7 +418,7 @@ def parse_item_html(html: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
             return None
         return None
 
-    for k in ('year', 'width_cm', 'depth_cm', 'sleepers', 'seats', 'engine_effect_hp', 'boat_max_speed_knots', 'weight_kg'):
+    for k in ('year', 'width_cm', 'depth_cm', 'sleepers', 'seats', 'engine_effect_hp', 'boat_max_speed_knots', 'weight_kg', 'price'):
         merged[k] = _to_int(merged.get(k))
 
     # Normaliser last_edited_at til datetime
@@ -269,6 +430,7 @@ def parse_item_html(html: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         'data_props': pack_data_props,
         'contact': pack_contact,
         'advertising': pack_adv,
+        'dom': pack_dom,
     }
     return merged, source_pack
 
