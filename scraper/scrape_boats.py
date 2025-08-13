@@ -34,16 +34,26 @@ def fetch_html(url: str) -> str | None:
     """
     ua_manager = UserAgentManager()
     headers = ua_manager.get_headers()
-    
-    try:
-        logging.info(f"Henter {url}")
-        resp = requests.get(url, headers=headers, timeout=15)
-        resp.raise_for_status()
-        time.sleep(random.uniform(2.0, 5.0))
-        return resp.text
-    except requests.RequestException as e:
-        logging.error(f"Feil ved henting av {url}: {e}")
-        return None
+    cookies = ua_manager.get_cookies()
+
+    backoffs = [0, 2, 5, 10]
+    for attempt, wait in enumerate(backoffs):
+        if wait:
+            time.sleep(wait + random.uniform(0.0, 0.8))
+        try:
+            logging.info(f"Henter {url}")
+            resp = requests.get(url, headers=headers, cookies=cookies, timeout=25)
+            # Enkel håndtering av anti-bot/gating
+            if resp.status_code in (403, 429):
+                logging.warning(f"{resp.status_code} mottatt, forsøker igjen (forsøk {attempt+1}/{len(backoffs)})")
+                continue
+            resp.raise_for_status()
+            time.sleep(random.uniform(1.2, 3.5))
+            return resp.text
+        except requests.RequestException as e:
+            logging.error(f"Feil ved henting av {url}: {e}")
+            continue
+    return None
 
 
 def parse_finn_boats(html_content: str, scraped_at_ts: datetime) -> List[Dict[str, Union[str, int, datetime, None]]]:

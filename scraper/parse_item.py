@@ -246,7 +246,19 @@ def fetch_and_parse_item(ad_url: str) -> Optional[Tuple[Dict[str, Any], Dict[str
         logging.warning(f"Kunne ikke hente HTML for {ad_url}")
         return None
     try:
-        return parse_item_html(html)
+        parsed = parse_item_html(html)
+        if not parsed:
+            return None
+        normalized, source = parsed
+        # Fallback: utled ad_id fra URL hvis mangler
+        if not normalized.get('ad_id') and ad_url:
+            try:
+                tail = ad_url.rstrip('/').split('/')[-1]
+                if tail.isdigit():
+                    normalized['ad_id'] = tail
+            except Exception:
+                pass
+        return normalized, source
     except Exception:
         logging.exception(f"Feil ved parsing av item HTML for {ad_url}")
         return None 

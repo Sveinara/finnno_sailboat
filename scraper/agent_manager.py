@@ -97,9 +97,10 @@ class UserAgentManager:
             "DNT": "1",
             "Connection": "keep-alive",
             "Upgrade-Insecure-Requests": "1",
+            "Referer": "https://www.finn.no/",
             "Sec-Fetch-Dest": "document",
             "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-Site": "same-origin",
             "Sec-Fetch-User": "?1",
             "Viewport-Width": width,
             "Sec-CH-UA-Mobile": "?1" if agent.mobile else "?0",
@@ -107,3 +108,24 @@ class UserAgentManager:
         }
         logging.info(f"Using UA (mobile={agent.mobile}, platform={agent.platform}): {agent.string}")
         return headers
+
+    def get_cookies(self) -> dict:
+        """Returner et sett med trygge standard-cookies som ofte tillater rendering uten CMP-blokk.
+        Kan overskrives via env: FINN_COOKIES="name=value; other=value""" 
+        raw = os.getenv("FINN_COOKIES")
+        if raw:
+            try:
+                parts = [p.strip() for p in raw.split(';') if p.strip()]
+                cookies = {}
+                for p in parts:
+                    if '=' in p:
+                        k, v = p.split('=', 1)
+                        cookies[k.strip()] = v.strip()
+                return cookies
+            except Exception:
+                pass
+        # Minimal consent/locale som ofte er ufarlig
+        return {
+            "cmpconsent": "accepted",
+            "locale": "nb_NO",
+        }
