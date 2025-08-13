@@ -278,12 +278,19 @@ def _extract_from_json_ld(soup: BeautifulSoup) -> Dict[str, Any]:
                     data['make'] = bname
             if not data.get('model') and isinstance(obj.get('model'), (str, int)):
                 data['model'] = obj.get('model')
-            # Adresse/postnummer
+            # Adresse/postnummer + kommunenavn/fylke
             address = obj.get('address') if isinstance(obj.get('address'), dict) else None
-            if address and not data.get('postal_code'):
-                pc = address.get('postalCode') or address.get('postal_code')
-                if isinstance(pc, str) and pc.isdigit():
-                    data['postal_code'] = pc
+            if address:
+                if not data.get('postal_code'):
+                    pc = address.get('postalCode') or address.get('postal_code')
+                    if isinstance(pc, str) and pc.isdigit():
+                        data['postal_code'] = pc
+                loc = address.get('addressLocality') or address.get('locality') or address.get('address_locality')
+                if isinstance(loc, str) and loc.strip() and not data.get('municipality'):
+                    data['municipality'] = loc.strip()
+                region = address.get('addressRegion') or address.get('region') or address.get('address_region')
+                if isinstance(region, str) and region.strip() and not data.get('county'):
+                    data['county'] = region.strip()
         if data:
             break
     # Meta fallback for tittel
@@ -543,6 +550,17 @@ def _extract_from_dom_fallback(soup: BeautifulSoup) -> Dict[str, Any]:
                     data['postal_code'] = postal
             except Exception:
                 pass
+        # Forsøk også å hente kommunenavn fra synlig link-tekst (f.eks. "0250 Oslo")
+        a_txt = _text(a) if a else None
+        if a_txt:
+            try:
+                parts = a_txt.strip().split()
+                if len(parts) >= 2 and parts[0].isdigit():
+                    data['municipality'] = ' '.join(parts[1:])
+                elif len(parts) >= 1 and not parts[0].isdigit():
+                    data['municipality'] = a_txt.strip()
+            except Exception:
+                pass
 
     return data
 
@@ -674,6 +692,23 @@ def parse_item_html(html: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     # Sett standard valuta hvis pris er funnet uten currency
     if merged.get('price') is not None and not merged.get('currency'):
         merged['currency'] = 'NOK'
+
+    # Lokasjons-postnormalisering: bruk postnummer til å sette kommunenavn når mulig (Oslo 0001–1299)
+    pc = merged.get('postal_code')
+    muni = merged.get('municipality')
+    cty = merged.get('county')
+    def _is_numeric_str(s: Any) -> bool:
+        return isinstance(s, str) and s.isdigit()
+    try:
+        if isinstance(pc, str) and len(pc) == 4 and pc.isdigit():
+            pc_int = int(pc)
+            if 1 <= pc_int <= 1299:
+                if (muni is None) or _is_numeric_str(muni):
+                    merged['municipality'] = 'Oslo'
+                if (cty is None) or _is_numeric_str(cty):
+                    merged['county'] = 'Oslo'
+    except Exception:
+        pass
 
     merged['scraped_at'] = datetime.now(timezone.utc)
 
