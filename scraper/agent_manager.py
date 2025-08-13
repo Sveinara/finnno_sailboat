@@ -88,7 +88,10 @@ class UserAgentManager:
         """Returns complete headers for a random user agent"""
         agent = self.get_random_agent()
         width = agent.viewport.split('x')[0]
-        
+        # Grovt sett realistiske Client Hints for Chrome/Edge
+        sec_ch_ua = '"Not)A;Brand";v="8", "Chromium";v="122", "Google Chrome";v="122"'
+        if 'Edg/' in agent.string:
+            sec_ch_ua = '"Not)A;Brand";v="8", "Chromium";v="122", "Microsoft Edge";v="122"'
         headers = {
             "User-Agent": agent.string,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -102,9 +105,12 @@ class UserAgentManager:
             "Sec-Fetch-Mode": "navigate",
             "Sec-Fetch-Site": "same-origin",
             "Sec-Fetch-User": "?1",
+            # Client Hints
+            "sec-ch-ua": sec_ch_ua,
+            "sec-ch-ua-mobile": "?1" if agent.mobile else "?0",
+            "sec-ch-ua-platform": f'"{agent.platform}"',
+            # Optional viewport width hint
             "Viewport-Width": width,
-            "Sec-CH-UA-Mobile": "?1" if agent.mobile else "?0",
-            "Sec-CH-UA-Platform": f'"{agent.platform}"',
         }
         logging.info(f"Using UA (mobile={agent.mobile}, platform={agent.platform}): {agent.string}")
         return headers
