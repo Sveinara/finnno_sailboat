@@ -611,7 +611,8 @@ def parse_item_html(html: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     pack_dom = _extract_from_dom_fallback(soup)
 
     merged: Dict[str, Any] = {}
-    for src in (pack_data_props, pack_adv, pack_contact, pack_jsonld, pack_dom):
+    # Prioriter menneskelige verdier før advertising-koder
+    for src in (pack_data_props, pack_jsonld, pack_dom, pack_contact, pack_adv):
         for k, v in (src or {}).items():
             if v is not None and (k not in merged or merged[k] in (None, '', [])):
                 merged[k] = v
@@ -640,6 +641,39 @@ def parse_item_html(html: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
     # Normaliser last_edited_at til datetime
     merged['last_edited_at'] = merged.get('last_edited_at') if isinstance(merged.get('last_edited_at'), datetime) else _parse_dt(merged.get('last_edited_at'))
+
+    # Kode→tekst mapping for felter som ofte kommer som koder i advertising
+    def _as_str(x: Any) -> Optional[str]:
+        if x is None:
+            return None
+        if isinstance(x, (int, float)):
+            return str(int(x))
+        if isinstance(x, str):
+            return x
+        return None
+
+    engine_type_map = {
+        # Observasjon: 1 → Innenbords
+        '1': 'Innenbords',
+        # Flere koder kan legges til når observert
+    }
+    material_map = {
+        # Observasjon: 2 → Glassfiber
+        '2': 'Glassfiber',
+        # Flere koder kan legges til når observert
+    }
+
+    et_code = _as_str(merged.get('engine_type'))
+    if et_code and et_code in engine_type_map:
+        merged['engine_type'] = engine_type_map[et_code]
+
+    mat_code = _as_str(merged.get('material'))
+    if mat_code and mat_code in material_map:
+        merged['material'] = material_map[mat_code]
+
+    # Sett standard valuta hvis pris er funnet uten currency
+    if merged.get('price') is not None and not merged.get('currency'):
+        merged['currency'] = 'NOK'
 
     merged['scraped_at'] = datetime.now(timezone.utc)
 
