@@ -12,6 +12,9 @@ apache-airflow-providers-postgres>=5.7.0
 # urllib3 is included with requests but can be explicitly specified
 urllib3>=2.0.0
 
+# Headless browser fallback
+playwright>=1.45.0
+
 # Local modules (included in project):
 # - scripts/user_agents.py (UserAgentManager class)
 # - scripts/scrape_boats.py (main scraping script)

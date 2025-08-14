@@ -11,6 +11,12 @@ import logging
 # Rebruk robust fetch fra eksisterende scraper
 from .scrape_boats import fetch_html
 
+# Valgfri Playwright-fallback (importeres hvis tilgjengelig)
+try:
+    from playwright.sync_api import sync_playwright  # type: ignore
+except Exception:  # pragma: no cover
+    sync_playwright = None  # type: ignore
+
 
 def _safe_json_loads(raw: Any) -> Optional[dict]:
     """Prøv å dekode en data-props streng til JSON.
@@ -722,6 +728,46 @@ def parse_item_html(html: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     return merged, source_pack
 
 
+def _has_informative_fields(normalized: Dict[str, Any]) -> bool:
+    informative_keys = [
+        'title','price','year','make','model','engine_make','engine_type','engine_effect_hp',
+        'width_cm','depth_cm','sleepers','seats','registration_number','municipality','county','postal_code','lat','lng'
+    ]
+    return any(normalized.get(k) not in (None, '', []) for k in informative_keys)
+
+
+def fetch_html_browser(ad_url: str) -> Optional[str]:
+    """Hent full HTML via headless Chromium hvis Playwright er tilgjengelig."""
+    if not sync_playwright:
+        logging.warning("Playwright ikke installert – hopper over browser-fallback")
+        return None
+    try:
+        with sync_playwright() as p:  # type: ignore
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(locale="nb-NO")
+            page = context.new_page()
+            # Besøk forsiden for å trigge ev. samtykke
+            page.goto("https://www.finn.no/", wait_until="domcontentloaded")
+            for sel in ['text=Godta', 'text=Aksepter', '[data-testid="accept-all"]', '[id*="accept"]']:
+                try:
+                    page.click(sel, timeout=1500)
+                    break
+                except Exception:
+                    pass
+            # Besøk annonsen
+            page.goto(ad_url, wait_until="domcontentloaded")
+            try:
+                page.wait_for_selector('#mobility-item-page-root, script[type="application/ld+json"]', timeout=6000)
+            except Exception:
+                pass
+            html = page.content()
+            browser.close()
+            return html
+    except Exception as e:  # pragma: no cover
+        logging.warning(f"Playwright-fallback feilet: {e}")
+        return None
+
+
 def fetch_and_parse_item(ad_url: str) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
     html = fetch_html(ad_url)
     if not html:
@@ -732,6 +778,18 @@ def fetch_and_parse_item(ad_url: str) -> Optional[Tuple[Dict[str, Any], Dict[str
         if not parsed:
             return None
         normalized, source = parsed
+
+        # Hvis ingen informative felter, forsøk browser-fallback én gang
+        if not _has_informative_fields(normalized):
+            logging.info(f"Forsøker browser-fallback for {ad_url}")
+            bhtml = fetch_html_browser(ad_url)
+            if bhtml:
+                parsed2 = parse_item_html(bhtml)
+                if parsed2:
+                    normalized2, source2 = parsed2
+                    if _has_informative_fields(normalized2):
+                        normalized, source = normalized2, source2
+
         # Fallback: utled ad_id fra URL hvis mangler
         if not normalized.get('ad_id') and ad_url:
             try:

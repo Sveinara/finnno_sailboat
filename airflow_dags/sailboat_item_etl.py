@@ -101,12 +101,26 @@ def sailboat_item_etl():
         """
         rows = pg.get_records(sql_latest, parameters=(ad_ids,))
         count = 0
+        skipped = 0
         for ad_id, ad_url in rows:
             res = fetch_and_parse_item(ad_url)
             if not res:
+                skipped += 1
                 continue
             normalized, source_pack = res
             normalized['ad_id'] = normalized.get('ad_id') or ad_id
+
+            # Hopp over innsats hvis vi ikke har noen informative felter (gated/lett HTML)
+            informative_keys = [
+                'title','price','year','make','model','engine_make','engine_type','engine_effect_hp',
+                'width_cm','depth_cm','sleepers','seats','registration_number','municipality','county','postal_code','lat','lng'
+            ]
+            has_info = any(normalized.get(k) not in (None, '', []) for k in informative_keys)
+            if not has_info:
+                skipped += 1
+                logging.warning(f"Skipper insert for {ad_url} (mangler informative felter)")
+                continue
+
             pg.run(
                 """
                 INSERT INTO sailboat.staging_item_details (
@@ -146,7 +160,7 @@ def sailboat_item_etl():
                 }
             )
             count += 1
-        logging.info(f"Item-detaljer hentet for {count} annonser")
+        logging.info(f"Item-detaljer: inserted={count}, skipped={skipped}")
         return count
 
     @task(task_id="upsert_master_and_prices")
