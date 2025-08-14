@@ -1,25 +1,9 @@
-# Requirements for Finn.no boat scraper
-# Core dependencies
-requests>=2.31.0
-beautifulsoup4>=4.12.0
-lxml>=4.9.0
-
-# Airflow dependencies
-apache-airflow>=2.7.0
-apache-airflow-providers-postgres>=5.7.0
-
-# Optional but recommended for better performance
-# urllib3 is included with requests but can be explicitly specified
-urllib3>=2.0.0
-
-# Headless browser fallback
-playwright>=1.45.0
-
-# Local modules (included in project):
-# - scripts/user_agents.py (UserAgentManager class)
-# - scripts/scrape_boats.py (main scraping script)
-
-# Development dependencies (optional)
-# pytest>=7.0.0  # For testing
-# black>=23.0.0   # For code formatting
-# flake8>=6.0.0   # For linting 
+beautifulsoup4==4.13.4
+certifi==2025.8.3
+charset-normalizer==3.4.2
+idna==3.10
+lxml==6.0.0
+requests==2.32.4
+soupsieve==2.7
+typing_extensions==4.14.1
+urllib3==2.5.0
