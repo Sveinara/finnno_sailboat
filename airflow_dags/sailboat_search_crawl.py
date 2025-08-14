@@ -29,9 +29,8 @@ STAGING_DATASET = Dataset("db://sailboat/staging_ads")
     tags=['finn', 'scraping', 'sailboat', 'crawl'],
     doc_md="""
     ### Sailboat Search Crawl
-    - Init schema/tabeller
     - Hent resultatsider (search)
-    - Last inn i sailboat.staging_ads
+    - Last inn i `sailboat.staging_ads`
     - Publiser dataset-oppdatering
     """
 )
@@ -48,25 +47,6 @@ fi
 """,
     )
 
-    @task(task_id="init_schema")
-    def init_schema() -> None:
-        pg_hook = PostgresHook(postgres_conn_id='postgres_finn_db')
-        sql_create = """
-        CREATE SCHEMA IF NOT EXISTS sailboat;
-
-        CREATE TABLE IF NOT EXISTS sailboat.staging_ads (
-            ad_id TEXT NOT NULL
-        );
-        ALTER TABLE sailboat.staging_ads
-            ADD COLUMN IF NOT EXISTS ad_url TEXT,
-            ADD COLUMN IF NOT EXISTS price INTEGER,
-            ADD COLUMN IF NOT EXISTS specs_text TEXT,
-            ADD COLUMN IF NOT EXISTS scraped_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_staging_ads_adid_scraped_at
-            ON sailboat.staging_ads (ad_id, scraped_at);
-        """
-        pg_hook.run(sql_create)
-
     @task(task_id="extract_all_boat_ads")
     def extract_data():
         FINN_URL = "https://www.finn.no/mobility/search/boat?class=2188&sales_form=120"
@@ -82,7 +62,7 @@ fi
         INSERT INTO sailboat.staging_ads (
             ad_id, ad_url, price, specs_text, scraped_at
         ) VALUES (
-            %(ad_id)s, %(ad_url)s, %(price)s, %(specs_text)s, %(scraped_at)s
+            CAST(%(ad_id)s AS BIGINT), %(ad_url)s, %(price)s, %(specs_text)s, %(scraped_at)s
         ) ON CONFLICT (ad_id, scraped_at) DO NOTHING;
         """
         inserted_count = 0
@@ -93,11 +73,9 @@ fi
         logging.info(f"Forsøkte å laste {len(ads)} annonser. {inserted_count} nye rader ble satt inn i sailboat.staging_ads.")
         return inserted_count
 
-    init_task = init_schema()
     extracted_ads = extract_data()
     loaded = load_data(extracted_ads)
 
-    init_task >> random_delay
     random_delay >> extracted_ads >> loaded
 
 
