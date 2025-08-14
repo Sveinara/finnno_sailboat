@@ -40,20 +40,20 @@ def fetch_html(url: str) -> str | None:
     for attempt, wait in enumerate(backoffs):
         if wait:
             time.sleep(wait + random.uniform(0.0, 0.8))
-    try:
-        logging.info(f"Henter {url}")
+        try:
+            logging.info(f"Henter {url}")
             resp = requests.get(url, headers=headers, cookies=cookies, timeout=25)
             # Enkel håndtering av anti-bot/gating
             if resp.status_code in (403, 429):
                 logging.warning(f"{resp.status_code} mottatt, forsøker igjen (forsøk {attempt+1}/{len(backoffs)})")
                 continue
-        resp.raise_for_status()
+            resp.raise_for_status()
             time.sleep(random.uniform(1.2, 3.5))
-        return resp.text
-    except requests.RequestException as e:
-        logging.error(f"Feil ved henting av {url}: {e}")
+            return resp.text
+        except requests.RequestException as e:
+            logging.error(f"Feil ved henting av {url}: {e}")
             continue
-        return None
+    return None
 
 
 def parse_finn_boats(html_content: str, scraped_at_ts: datetime) -> List[Dict[str, Union[str, int, datetime, None]]]:
@@ -198,56 +198,29 @@ def get_boat_ads_data(url: str, max_pages: int = 50, output_path: Path | None = 
     while current_url and page <= max_pages:
         html = fetch_html(current_url)
         if not html:
-            logging.error(f"Kunne ikke hente HTML for side {page}.")
+            logging.warning(f"Ingen HTML returnert for side {page}: {current_url}")
             break
-
+        soup = BeautifulSoup(html, "lxml")
         scraped_at_ts = datetime.now(timezone.utc)
         page_ads = parse_finn_boats(html, scraped_at_ts)
-
-        # Fallback: hvis 0 annonser, prøv enkel forespørsel uten headers
-        if len(page_ads) == 0:
-            logging.info("0 treff – prøver enkel forespørsel uten headers...")
-            try:
-                simple_resp = requests.get(current_url, timeout=15)
-                simple_resp.raise_for_status()
-                simple_html = simple_resp.text
-                simple_ads = parse_finn_boats(simple_html, scraped_at_ts)
-                logging.info(f"Fallback fant {len(simple_ads)} annonser")
-                if len(simple_ads) > 0:
-                    html = simple_html
-                    page_ads = simple_ads
-            except Exception as e:
-                logging.warning(f"Fallback-feil: {e}")
-
         all_ads.extend(page_ads)
-        logging.info(f"Hentet {len(page_ads)} annonser fra side {page}")
 
-        # Finn neste side hvis den finnes (bruk tolerant parser for next-page)
-        logging.debug(f"Søker etter neste side på side {page}")
-        try:
-            soup_for_next = BeautifulSoup(html, "html.parser")
-            next_url = get_next_page_url(soup_for_next, current_url)
-        except Exception as e:
-            logging.warning(f"Klarte ikke å parse next-page med html.parser: {e}")
-            next_url = None
-
+        next_url = get_next_page_url(soup, current_url)
         if not next_url:
-            logging.info(f"Ingen neste side funnet på side {page}")
-            break
-        else:
-            logging.info(f"Fant neste side: {next_url}")
-            current_url = next_url
-            
-        page += 1
-        if page > max_pages:
-            logging.info(f"Nådde maks antall sider ({max_pages})")
+            logging.info("Ingen flere sider funnet. Stopper.")
             break
 
-    logging.info(f"Fullført parsing. Fant totalt {len(all_ads)} gyldige annonser over {page-1} sider.")
-    
+        current_url = next_url
+        page += 1
+        time.sleep(random.uniform(0.8, 2.2))
+
     if output_path:
-        save_ads_to_json(all_ads, output_path)
-        
+        try:
+            save_ads_to_json(all_ads, output_path)
+        except Exception as e:
+            logging.error(f"Kunne ikke lagre JSON: {e}")
+
+    logging.info(f"Totalt {len(all_ads)} annonser hentet")
     return all_ads
 
 # Eksempelkjøring lokalt
