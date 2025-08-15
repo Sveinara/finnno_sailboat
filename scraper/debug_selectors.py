@@ -91,7 +91,11 @@ def handle_source(name: str, html: str, selectors: List[str], keywords: List[str
     print(f"HTML lengde: {len(html)} tegn")
     if looks_like_gated(html):
         print("Hint: HTML ser ut som 'light/gated' (mangler nøkkelblokker eller inneholder consent-tekst)")
-    soup = BeautifulSoup(html, 'lxml')
+    try:
+        soup = BeautifulSoup(html, 'lxml')
+    except:
+        print("lxml feilet, bruker html.parser...")
+        soup = BeautifulSoup(html, 'html.parser')
     print("Selector-sjekk:")
     print_selector_matches(soup, selectors)
     if keywords:

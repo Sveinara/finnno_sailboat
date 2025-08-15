@@ -6,6 +6,9 @@ lxml>=4.9.0
 # Web automation (optional, for Playwright fallback)
 playwright>=1.45.0
 
+# Compression support for modern web responses
+brotli>=1.1.0
+
 # Airflow provider packages
 apache-airflow-providers-postgres>=5.10.0
 

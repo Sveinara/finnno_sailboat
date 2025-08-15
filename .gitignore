@@ -14,3 +14,31 @@ __pycache__/
 
 # Ignorer backup-filer
 *.bak
+
+# Ignoerer debug og testfiler
+*.txt
+*.log
+*.log.*
+*.log.*.*
+*.log.*.*.*
+*.log.*.*.*.*
+*.log.*.*.*.*.*
+
+*.html
+*.json
+*.jsonl
+*.jsonl.*
+*.jsonl.*.*
+*.jsonl.*.*.*
+*.jsonl.*.*.*.*
+*.jsonl.*.*.*.*.*
+
+*.csv
+*.csv.*
+*.csv.*.*
+*.csv.*.*.*
+*.csv.*.*.*.*
+*.csv.*.*.*.*.*
+
+
+

@@ -12,6 +12,7 @@ from bs4.element import ResultSet, Tag
 import json
 from pathlib import Path
 from scraper.agent_manager import UserAgentManager
+import subprocess
 
 # --- Konstanter for CSS Selektorer ---
 AD_ARTICLE_SELECTOR = "article.relative.isolate.sf-search-ad"
@@ -27,6 +28,50 @@ NEXT_PAGE_SELECTOR = "a[rel='next']"
 BASE_URL = "https://www.finn.no"
 
 
+def fetch_html_curl(url: str) -> str | None:
+    """
+    Fallback til curl for å håndtere komplisert encoding/dekomprimering.
+    """
+    try:
+        ua_manager = UserAgentManager()
+        agent = ua_manager.get_random_agent()
+        
+        # Bygg curl-kommando
+        cmd = [
+            'curl', '-s', '--compressed', '--max-time', '30',
+            '-H', f'User-Agent: {agent.string}',
+            '-H', 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            '-H', 'Accept-Language: nb-NO,nb;q=0.9,en-US;q=0.8,en;q=0.7',
+            '-H', 'Accept-Encoding: gzip, deflate, br',
+            '-H', 'DNT: 1',
+            '-H', 'Connection: keep-alive',
+            '-H', 'Upgrade-Insecure-Requests: 1',
+            '-H', 'Referer: https://www.finn.no/',
+            url
+        ]
+        
+        logging.info(f"Henter med curl: {url}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=35)
+        
+        if result.returncode != 0:
+            logging.error(f"curl feilet med returnkode {result.returncode}: {result.stderr}")
+            return None
+            
+        html = result.stdout
+        if len(html) < 1000:
+            logging.warning(f"Mistenkelig kort curl-respons: {len(html)} tegn")
+            return None
+            
+        return html
+        
+    except subprocess.TimeoutExpired:
+        logging.error(f"curl timeout for {url}")
+        return None
+    except Exception as e:
+        logging.error(f"curl feil for {url}: {e}")
+        return None
+
+
 def fetch_html(url: str) -> str | None:
     """
     Henter HTML med randomisert User-Agent og headers.
@@ -35,6 +80,16 @@ def fetch_html(url: str) -> str | None:
     ua_manager = UserAgentManager()
     headers = ua_manager.get_headers()
     cookies = ua_manager.get_cookies()
+    
+    # Legg til headers for å sikre riktig encoding og dekomprimering
+    headers.update({
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'nb-NO,nb;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+        'Upgrade-Insecure-Requests': '1'
+    })
     
     backoffs = [0, 2, 5, 10]
     for attempt, wait in enumerate(backoffs):
@@ -48,12 +103,37 @@ def fetch_html(url: str) -> str | None:
                 logging.warning(f"{resp.status_code} mottatt, forsøker igjen (forsøk {attempt+1}/{len(backoffs)})")
                 continue
             resp.raise_for_status()
+            
+            # Sjekk at innholdet er tekst og ikke binært
+            content_type = resp.headers.get('content-type', '').lower()
+            if 'text/html' not in content_type:
+                logging.warning(f"Uventet content-type: {content_type}")
+                continue
+                
+            # Prøv å få riktig text-innhold
+            html_text = resp.text
+            if len(html_text) < 1000:  # Suspekt kort respons
+                logging.warning(f"Mistenkelig kort HTML-respons: {len(html_text)} tegn")
+                continue
+                
+            # Sjekk om HTML-en ser korrupt ut (tegn på dekomprimering-problem)
+            if not html_text.strip().startswith('<') or 'mobility-item-page-root' not in html_text:
+                logging.warning("HTML ser korrupt ut, prøver curl-fallback")
+                return fetch_html_curl(url)
+                
             time.sleep(random.uniform(1.2, 3.5))
-            return resp.text
+            return html_text
+            
         except requests.RequestException as e:
             logging.error(f"Feil ved henting av {url}: {e}")
             continue
-    return None
+        except UnicodeDecodeError as e:
+            logging.error(f"Unicode decode feil for {url}: {e}")
+            continue
+    
+    # Hvis requests feiler, prøv curl som fallback
+    logging.info("requests feilet, prøver curl-fallback")
+    return fetch_html_curl(url)
 
 
 def parse_finn_boats(html_content: str, scraped_at_ts: datetime) -> List[Dict[str, Union[str, int, datetime, None]]]:
