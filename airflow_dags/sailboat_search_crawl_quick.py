@@ -3,7 +3,6 @@ import os
 from datetime import datetime
 from airflow.decorators import dag, task
 from airflow.providers.postgres.hooks.postgres import PostgresHook
-from airflow.operators.bash import BashOperator
 from airflow.datasets import Dataset
 import logging
 
@@ -22,41 +21,30 @@ STAGING_DATASET = Dataset("db://sailboat/staging_ads")
 
 
 @dag(
-    dag_id='sailboat_search_crawl',
+    dag_id='sailboat_search_crawl_quick',
     start_date=datetime(2023, 10, 26),
-    schedule='0 7,18 * * *',
+    schedule=None,  # Kun manuell kjøring
     catchup=False,
-    tags=['finn', 'scraping', 'sailboat', 'crawl'],
+    tags=['finn', 'scraping', 'sailboat', 'crawl', 'quick', 'testing'],
     doc_md="""
-    ### Sailboat Search Crawl
-    - Hent resultatsider (search)
+    ### Sailboat Search Crawl (Quick)
+    - **RASK VERSJON** - ingen tilfeldig delay
+    - Hent resultatsider (search) umiddelbart
     - Last inn i `sailboat.staging_ads`
     - Publiser dataset-oppdatering
+    - Perfekt for testing og debugging
     """
 )
-def sailboat_search_crawl():
-
-    random_delay = BashOperator(
-        task_id='random_delay',
-        bash_command="""
-if [ "{{ dag_run.conf.get('skip_delay', '0') }}" = "1" ]; then
-  echo 'Hopper over delay (skip_delay=1)';
-elif [ "{{ dag_run.conf.get('quick_run', '0') }}" = "1" ]; then
-  echo 'Quick run - minimal delay';
-  sleep 5;
-else
-  echo 'Normal delay - venter tilfeldig tid...';
-  sleep $(( RANDOM % {{ dag_run.conf.get('max_delay', 7200) }} ));
-fi
-""",
-    )
+def sailboat_search_crawl_quick():
 
     @task(task_id="extract_all_boat_ads")
     def extract_data():
         FINN_URL = "https://www.finn.no/mobility/search/boat?class=2188&sales_form=120"
+        logging.info("QUICK RUN - starter umiddelbart uten delay")
         ads = get_boat_ads_data(url=FINN_URL)
         if not ads:
             raise ValueError("Ingen annonser funnet, stopper kjøringen.")
+        logging.info(f"QUICK RUN - fant {len(ads)} annonser")
         return ads
 
     @task(task_id="load_to_staging", outlets=[STAGING_DATASET])
@@ -74,13 +62,14 @@ fi
             result = pg_hook.run(sql_insert, parameters=ad, handler=lambda cursor: getattr(cursor, 'rowcount', 0))
             if isinstance(result, int) and result > 0:
                 inserted_count += result
-        logging.info(f"Forsøkte å laste {len(ads)} annonser. {inserted_count} nye rader ble satt inn i sailboat.staging_ads.")
+        logging.info(f"QUICK RUN - lastet {len(ads)} annonser. {inserted_count} nye rader i staging_ads.")
         return inserted_count
 
     extracted_ads = extract_data()
     loaded = load_data(extracted_ads)
 
-    random_delay >> extracted_ads >> loaded
+    # Ingen delay-task i quick versjon
+    extracted_ads >> loaded
 
 
-sailboat_search_crawl() 
+sailboat_search_crawl_quick() 

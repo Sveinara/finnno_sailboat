@@ -369,6 +369,47 @@ def _extract_from_dom_fallback(soup: BeautifulSoup) -> Dict[str, Any]:
 
     def _text(node):
         return node.get_text(strip=True) if node else None
+        
+    # Først: finn FULL beskrivelse under "Beskrivelse" section
+    for h2 in soup.find_all('h2'):
+        if h2 and 'beskrivelse' in _text(h2).lower():
+            # Finn parent section eller neste sibling div/section
+            parent_section = h2.find_parent('section')
+            if parent_section:
+                # Prøv først expandable section
+                expandable = parent_section.select_one('[data-testid="expandable-section"]')
+                if expandable:
+                    desc_text = expandable.get_text(" ", strip=True)
+                else:
+                    # Fallback: all text fra section unntatt h2
+                    desc_text = parent_section.get_text(" ", strip=True)
+                
+                if desc_text and len(desc_text.strip()) > 50:
+                    # Fjern "Beskrivelse" tittel fra starten
+                    clean_desc = desc_text.replace('Beskrivelse', '').strip()
+                    # Fjern eventuell "Vis mer" eller lignende
+                    clean_desc = clean_desc.replace('Vis mer', '').replace('Show more', '').strip()
+                    if clean_desc and len(clean_desc) > 50:
+                        data['description'] = clean_desc
+                        break
+            
+            # Alternativ: finn neste div etter h2
+            next_div = h2.find_next_sibling('div')
+            if next_div and not data.get('description'):
+                desc_text = next_div.get_text(" ", strip=True)
+                if desc_text and len(desc_text.strip()) > 50:
+                    clean_desc = desc_text.replace('Vis mer', '').replace('Show more', '').strip()
+                    if clean_desc:
+                        data['description'] = clean_desc
+                        break
+    
+    # Fallback: meta description hvis ingen full beskrivelse funnet
+    if not data.get('description'):
+        meta_desc = soup.select_one('meta[name="description"]')
+        if meta_desc:
+            content = meta_desc.get('content')
+            if content and len(content.strip()) > 20:  # Filtrer ut for korte meta descriptions
+                data['description'] = content.strip()
 
     # Tittel
     h1 = soup.select_one('h1, h1.t1')

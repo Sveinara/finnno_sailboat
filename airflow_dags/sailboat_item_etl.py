@@ -20,6 +20,12 @@ from scraper.parse_item import fetch_and_parse_item  # type: ignore
 
 STAGING_DATASET = Dataset("db://sailboat/staging_ads")
 
+def json_serialize_with_datetime(obj):
+    """JSON serializer som håndterer datetime-objekter"""
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+
 
 @dag(
     dag_id='sailboat_item_etl',
@@ -102,65 +108,94 @@ def sailboat_item_etl():
         rows = pg.get_records(sql_latest, parameters=(ad_ids,))
         count = 0
         skipped = 0
+        inactive_count = 0
+        
         for ad_id, ad_url in rows:
-            res = fetch_and_parse_item(ad_url)
-            if not res:
+            try:
+                res = fetch_and_parse_item(ad_url)
+                if not res:
+                    skipped += 1
+                    continue
+                normalized, source_pack = res
+                normalized['ad_id'] = normalized.get('ad_id') or ad_id
+
+                # Hopp over innsats hvis vi ikke har noen informative felter (gated/lett HTML)
+                informative_keys = [
+                    'title','description','price','year','make','model','engine_make','engine_type','engine_effect_hp',
+                    'width_cm','depth_cm','sleepers','seats','registration_number','municipality','county','postal_code','lat','lng'
+                ]
+                has_info = any(normalized.get(k) not in (None, '', []) for k in informative_keys)
+                if not has_info:
+                    skipped += 1
+                    logging.warning(f"Skipper insert for {ad_url} (mangler informative felter)")
+                    continue
+
+                pg.run(
+                    """
+                    INSERT INTO sailboat.staging_item_details (
+                      ad_id, scraped_at, source_json, title, description, year, make, model, material, weight_kg,
+                      width_cm, depth_cm, sleepers, seats, engine_make, engine_type, engine_effect_hp,
+                      boat_max_speed_knots, registration_number, municipality, county, postal_code, lat, lng
+                    ) VALUES (
+                      %(ad_id)s, %(scraped_at)s, %(source_json)s, %(title)s, %(description)s, %(year)s, %(make)s, %(model)s, %(material)s, %(weight_kg)s,
+                      %(width_cm)s, %(depth_cm)s, %(sleepers)s, %(seats)s, %(engine_make)s, %(engine_type)s, %(engine_effect_hp)s,
+                      %(boat_max_speed_knots)s, %(registration_number)s, %(municipality)s, %(county)s, %(postal_code)s, %(lat)s, %(lng)s
+                    );
+                    """,
+                    parameters={
+                        'ad_id': normalized.get('ad_id'),
+                        'scraped_at': normalized.get('scraped_at'),
+                        'source_json': json.dumps(source_pack, ensure_ascii=False, default=json_serialize_with_datetime),
+                        'title': normalized.get('title'),
+                        'description': normalized.get('description'),
+                        'year': normalized.get('year'),
+                        'make': normalized.get('make'),
+                        'model': normalized.get('model'),
+                        'material': normalized.get('material'),
+                        'weight_kg': normalized.get('weight_kg'),
+                        'width_cm': normalized.get('width_cm'),
+                        'depth_cm': normalized.get('depth_cm'),
+                        'sleepers': normalized.get('sleepers'),
+                        'seats': normalized.get('seats'),
+                        'engine_make': normalized.get('engine_make'),
+                        'engine_type': normalized.get('engine_type'),
+                        'engine_effect_hp': normalized.get('engine_effect_hp'),
+                        'boat_max_speed_knots': normalized.get('boat_max_speed_knots'),
+                        'registration_number': normalized.get('registration_number'),
+                        'municipality': normalized.get('municipality'),
+                        'county': normalized.get('county'),
+                        'postal_code': normalized.get('postal_code'),
+                        'lat': normalized.get('lat'),
+                        'lng': normalized.get('lng'),
+                    }
+                )
+                count += 1
+            except Exception as e:
+                error_msg = str(e).lower()
+                
+                # Sjekk for 404-feil (annonse slettet/inaktiv)
+                if '404' in error_msg or 'not found' in error_msg:
+                    try:
+                        # Marker annonse som inaktiv direkte i databasen
+                        result = pg.run(
+                            "UPDATE sailboat.ads SET active = FALSE WHERE ad_id = %s AND active = TRUE RETURNING ad_id;",
+                            parameters=(ad_id,)
+                        )
+                        if result and len(result) > 0:
+                            inactive_count += 1
+                            logging.info(f"🚫 Annonse {ad_id} returnerte 404, markert som inaktiv")
+                        else:
+                            logging.warning(f"Annonse {ad_id} returnerte 404 men var allerede inaktiv")
+                        continue
+                    except Exception as db_e:
+                        logging.error(f"Feil ved markering av annonse {ad_id} som inaktiv: {db_e}")
+                
+                # Andre feil
+                logging.error(f"Feil ved fetch_and_parse_item for {ad_url}: {e}")
                 skipped += 1
                 continue
-            normalized, source_pack = res
-            normalized['ad_id'] = normalized.get('ad_id') or ad_id
-
-            # Hopp over innsats hvis vi ikke har noen informative felter (gated/lett HTML)
-            informative_keys = [
-                'title','price','year','make','model','engine_make','engine_type','engine_effect_hp',
-                'width_cm','depth_cm','sleepers','seats','registration_number','municipality','county','postal_code','lat','lng'
-            ]
-            has_info = any(normalized.get(k) not in (None, '', []) for k in informative_keys)
-            if not has_info:
-                skipped += 1
-                logging.warning(f"Skipper insert for {ad_url} (mangler informative felter)")
-                continue
-
-            pg.run(
-                """
-                INSERT INTO sailboat.staging_item_details (
-                  ad_id, scraped_at, source_json, title, year, make, model, material, weight_kg,
-                  width_cm, depth_cm, sleepers, seats, engine_make, engine_type, engine_effect_hp,
-                  boat_max_speed_knots, registration_number, municipality, county, postal_code, lat, lng
-                ) VALUES (
-                  %(ad_id)s, %(scraped_at)s, %(source_json)s, %(title)s, %(year)s, %(make)s, %(model)s, %(material)s, %(weight_kg)s,
-                  %(width_cm)s, %(depth_cm)s, %(sleepers)s, %(seats)s, %(engine_make)s, %(engine_type)s, %(engine_effect_hp)s,
-                  %(boat_max_speed_knots)s, %(registration_number)s, %(municipality)s, %(county)s, %(postal_code)s, %(lat)s, %(lng)s
-                );
-                """,
-                parameters={
-                    'ad_id': normalized.get('ad_id'),
-                    'scraped_at': normalized.get('scraped_at'),
-                    'source_json': json.dumps(source_pack, ensure_ascii=False),
-                    'title': normalized.get('title'),
-                    'year': normalized.get('year'),
-                    'make': normalized.get('make'),
-                    'model': normalized.get('model'),
-                    'material': normalized.get('material'),
-                    'weight_kg': normalized.get('weight_kg'),
-                    'width_cm': normalized.get('width_cm'),
-                    'depth_cm': normalized.get('depth_cm'),
-                    'sleepers': normalized.get('sleepers'),
-                    'seats': normalized.get('seats'),
-                    'engine_make': normalized.get('engine_make'),
-                    'engine_type': normalized.get('engine_type'),
-                    'engine_effect_hp': normalized.get('engine_effect_hp'),
-                    'boat_max_speed_knots': normalized.get('boat_max_speed_knots'),
-                    'registration_number': normalized.get('registration_number'),
-                    'municipality': normalized.get('municipality'),
-                    'county': normalized.get('county'),
-                    'postal_code': normalized.get('postal_code'),
-                    'lat': normalized.get('lat'),
-                    'lng': normalized.get('lng'),
-                }
-            )
-            count += 1
-        logging.info(f"Item-detaljer: inserted={count}, skipped={skipped}")
+                
+        logging.info(f"Item-detaljer: inserted={count}, skipped={skipped}, marked_inactive={inactive_count}")
         return count
 
     @task(task_id="upsert_master_and_prices")
@@ -179,7 +214,7 @@ def sailboat_item_etl():
         ),
         upserted AS (
           INSERT INTO sailboat.ads (
-            ad_id, ad_url, title, year, make, model, material, weight_kg, width_cm, depth_cm,
+            ad_id, ad_url, title, description, year, make, model, material, weight_kg, width_cm, depth_cm,
             sleepers, seats, engine_make, engine_type, engine_effect_hp, boat_max_speed_knots,
             registration_number, municipality, county, postal_code, lat, lng,
             latest_price, first_seen_at, last_seen_at, last_scraped_at, last_edited_at, active, source_raw
@@ -187,7 +222,7 @@ def sailboat_item_etl():
           SELECT 
             COALESCE(d.ad_id, l.ad_id) AS ad_id,
             l.ad_url,
-            d.title, d.year, d.make, d.model, d.material, d.weight_kg, d.width_cm, d.depth_cm,
+            d.title, d.description, d.year, d.make, d.model, d.material, d.weight_kg, d.width_cm, d.depth_cm,
             d.sleepers, d.seats, d.engine_make, d.engine_type, d.engine_effect_hp, d.boat_max_speed_knots,
             d.registration_number, d.municipality, d.county, d.postal_code, d.lat, d.lng,
             l.price AS latest_price,
@@ -202,6 +237,7 @@ def sailboat_item_etl():
           ON CONFLICT (ad_id) DO UPDATE SET
             ad_url = EXCLUDED.ad_url,
             title = COALESCE(EXCLUDED.title, sailboat.ads.title),
+            description = COALESCE(EXCLUDED.description, sailboat.ads.description),
             year = COALESCE(EXCLUDED.year, sailboat.ads.year),
             make = COALESCE(EXCLUDED.make, sailboat.ads.make),
             model = COALESCE(EXCLUDED.model, sailboat.ads.model),
@@ -233,6 +269,7 @@ def sailboat_item_etl():
           FROM sailboat.ads a
           JOIN latest l ON l.ad_id = a.ad_id
           WHERE COALESCE(a.latest_price, -1) <> COALESCE(l.price, -1)
+            AND l.price IS NOT NULL  -- Bare lagre prisendringer som har en faktisk pris
         )
         INSERT INTO sailboat.price_history (ad_id, price, changed_at)
         SELECT ad_id, new_price, scraped_at FROM price_change;

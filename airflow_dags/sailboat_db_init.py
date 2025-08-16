@@ -61,6 +61,7 @@ def sailboat_db_init():
             scraped_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             source_json JSONB,
             title TEXT,
+            description TEXT,
             year INTEGER,
             make TEXT,
             model TEXT,
@@ -82,12 +83,24 @@ def sailboat_db_init():
             lng DOUBLE PRECISION,
             PRIMARY KEY (ad_id, scraped_at)
         );
+        
+        -- Legg til description kolonne hvis den ikke finnes
+        DO $$ BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema='sailboat' AND table_name='staging_item_details'
+                AND column_name='description'
+            ) THEN
+                ALTER TABLE sailboat.staging_item_details ADD COLUMN description TEXT;
+            END IF;
+        END $$;
 
         -- ads (master)
         CREATE TABLE IF NOT EXISTS sailboat.ads (
             ad_id BIGINT PRIMARY KEY,
             ad_url TEXT NOT NULL,
             title TEXT,
+            description TEXT,
             year INTEGER,
             make TEXT,
             model TEXT,
@@ -115,6 +128,17 @@ def sailboat_db_init():
             active BOOLEAN NOT NULL DEFAULT TRUE,
             source_raw JSONB
         );
+        
+        -- Legg til description kolonne i ads hvis den ikke finnes
+        DO $$ BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema='sailboat' AND table_name='ads'
+                AND column_name='description'
+            ) THEN
+                ALTER TABLE sailboat.ads ADD COLUMN description TEXT;
+            END IF;
+        END $$;
 
         -- price_history
         CREATE TABLE IF NOT EXISTS sailboat.price_history (
@@ -123,6 +147,81 @@ def sailboat_db_init():
             changed_at TIMESTAMPTZ NOT NULL,
             PRIMARY KEY (ad_id, changed_at)
         );
+
+        -- ========== PGVECTOR SETUP ==========
+        -- Enable pgvector extension
+        CREATE EXTENSION IF NOT EXISTS vector;
+
+        -- Description chunks with embeddings
+        CREATE TABLE IF NOT EXISTS sailboat.description_chunks (
+            chunk_id SERIAL PRIMARY KEY,
+            ad_id BIGINT NOT NULL REFERENCES sailboat.ads(ad_id) ON DELETE CASCADE,
+            chunk_text TEXT NOT NULL,
+            chunk_order INTEGER NOT NULL, -- Order within the description
+            chunk_length INTEGER NOT NULL,
+            overlap_words INTEGER DEFAULT 0,
+            embedding vector(384), -- Sentence-Transformers all-MiniLM-L6-v2 dimensjon
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        -- Index for fast similarity search
+        CREATE INDEX IF NOT EXISTS idx_description_chunks_embedding 
+        ON sailboat.description_chunks USING ivfflat (embedding vector_cosine_ops)
+        WITH (lists = 100);
+
+        -- Index for ad lookup
+        CREATE INDEX IF NOT EXISTS idx_description_chunks_ad_id 
+        ON sailboat.description_chunks (ad_id);
+
+        -- Semantic scoring for different aspects
+        CREATE TABLE IF NOT EXISTS sailboat.semantic_scores (
+            score_id SERIAL PRIMARY KEY,
+            ad_id BIGINT NOT NULL REFERENCES sailboat.ads(ad_id) ON DELETE CASCADE,
+            aspect TEXT NOT NULL, -- 'sails', 'motor', 'condition', 'equipment'
+            raw_score DOUBLE PRECISION NOT NULL, -- 0.0-1.0 semantic confidence
+            normalized_score DOUBLE PRECISION, -- Normalized against entire dataset
+            supporting_chunks INTEGER[], -- Array of chunk_ids that contributed
+            score_method TEXT NOT NULL, -- 'embedding_similarity', 'llm_classification'
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(ad_id, aspect)
+        );
+
+        -- Index for aspect scoring lookup
+        CREATE INDEX IF NOT EXISTS idx_semantic_scores_aspect 
+        ON sailboat.semantic_scores (aspect, normalized_score DESC);
+
+        -- Search queries and results cache
+        CREATE TABLE IF NOT EXISTS sailboat.search_cache (
+            query_hash TEXT PRIMARY KEY,
+            query_text TEXT NOT NULL,
+            result_ad_ids BIGINT[],
+            similarity_scores DOUBLE PRECISION[],
+            search_method TEXT NOT NULL,
+            expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '1 hour',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        -- Add columns to existing ads table for quick semantic search
+        DO $$ BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema='sailboat' AND table_name='ads'
+                AND column_name='has_embeddings'
+            ) THEN
+                ALTER TABLE sailboat.ads ADD COLUMN has_embeddings BOOLEAN DEFAULT FALSE;
+            END IF;
+        END $$;
+
+        DO $$ BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema='sailboat' AND table_name='ads'
+                AND column_name='semantic_processed_at'
+            ) THEN
+                ALTER TABLE sailboat.ads ADD COLUMN semantic_processed_at TIMESTAMPTZ;
+            END IF;
+        END $$;
         """
         pg.run(sql)
 

@@ -16,4 +16,18 @@ apache-airflow-providers-postgres>=5.10.0
 psycopg2-binary>=2.9.0
 
 # Development and testing tools
-argparse  # Built into Python 3.2+, but explicit for clarity 
+argparse  # Built into Python 3.2+, but explicit for clarity
+
+# ========== SEMANTIC SEARCH DEPENDENCIES ==========
+# Vector computations and embeddings
+numpy>=1.24.0
+sentence-transformers>=2.2.0
+
+# Optional: OpenAI API for embeddings (alternative to sentence-transformers)
+openai>=0.28.0
+
+# PostgreSQL vector extension (pgvector) - requires installation on DB
+# Note: pgvector must be installed separately on PostgreSQL server
+
+# Machine learning utilities
+scikit-learn>=1.3.0  # For additional ML utilities if needed 
