@@ -201,6 +201,20 @@ def _extract_from_data_props(soup: BeautifulSoup) -> Dict[str, Any]:
                 _scan(v)
 
     _scan(dp_obj)
+    if not equipment:
+        # Se etter enklere equipment-felt hvis vi ikke fant noe ved skanning
+        for key in ('equipment', 'equipment_safe', 'equipment_unsafe'):
+            raw = ad.get(key) or dp_obj.get(key)
+            if isinstance(raw, list):
+                equipment.extend(_collect_items(raw))
+            elif isinstance(raw, str):
+                eq_soup = BeautifulSoup(raw, 'html.parser')
+                for tag in eq_soup.find_all(['li', 'p']):
+                    txt = tag.get_text(strip=True)
+                    if txt:
+                        equipment.append(txt)
+            if equipment:
+                break
     if equipment:
         data['equipment'] = equipment
 
