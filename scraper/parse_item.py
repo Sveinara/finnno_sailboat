@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, List
 from urllib.parse import unquote, urlparse, parse_qs
 import json
 import logging
@@ -155,6 +155,47 @@ def _extract_from_data_props(soup: BeautifulSoup) -> Dict[str, Any]:
     elif isinstance(price, (int, float)):
         data['price'] = int(price)
         data['currency'] = 'NOK'
+
+    # Utstyr/Equipment-listen kan ligge dypt inne i data-props. Gå rekursivt
+    equipment: List[str] = []
+
+    def _collect_items(val: Any) -> List[str]:
+        items: List[str] = []
+        if isinstance(val, list):
+            for it in val:
+                if isinstance(it, str):
+                    txt = it.strip()
+                    if txt:
+                        items.append(txt)
+                elif isinstance(it, dict):
+                    for k in ('label', 'title', 'value', 'name', 'text'):
+                        v = it.get(k)
+                        if isinstance(v, str) and v.strip():
+                            items.append(v.strip())
+                            break
+        return items
+
+    def _scan(node: Any) -> None:
+        if isinstance(node, dict):
+            heading = None
+            for key in ('heading', 'title', 'label', 'name', 'text'):
+                val = node.get(key)
+                if isinstance(val, str):
+                    heading = val.strip()
+                    break
+            if heading and heading.lower() == 'utstyr':
+                for key in ('items', 'value', 'values', 'list', 'children'):
+                    maybe = node.get(key)
+                    equipment.extend(_collect_items(maybe))
+            for v in node.values():
+                _scan(v)
+        elif isinstance(node, list):
+            for v in node:
+                _scan(v)
+
+    _scan(dp_obj)
+    if equipment:
+        data['equipment'] = equipment
 
     return data
 
@@ -449,6 +490,42 @@ def _extract_from_dom_fallback(soup: BeautifulSoup) -> Dict[str, Any]:
                         data['currency'] = 'NOK'
                     except Exception:
                         pass
+
+    # Finn seksjon med overskrift "Utstyr" og hent alle bullet points
+    for h2 in soup.find_all('h2'):
+        heading = _text(h2)
+        if heading and heading.strip().lower() == 'utstyr':
+            section = h2.find_parent('section')
+            container = None
+            if section:
+                # Ny markup bruker expandable-section med p-elementer
+                container = (
+                    section.select_one('[data-testid="expandable-section"]')
+                    or section.find('ul')
+                    or section
+                )
+            if not container:
+                sib = h2.find_next_sibling()
+                while sib and not (
+                    sib.find('ul') or sib.select_one(r'.children\:list-disc')
+                ):
+                    sib = sib.find_next_sibling()
+                container = sib
+
+            items: List[str] = []
+            if container:
+                bullet_parent = (
+                    container.select_one(r'.children\:list-disc')
+                    or container.find('ul')
+                    or container
+                )
+                for node in bullet_parent.find_all(['li', 'p']):
+                    txt = node.get_text(' ', strip=True)
+                    if txt and txt.lower() not in {'vis mer', 'show more'}:
+                        items.append(txt)
+            if items:
+                data['equipment'] = items
+            break
 
     # Oversikts-grid: label (p eller label) med klasse s-text-subtle + verdi i p.font-bold
     label_nodes = soup.select('label.s-text-subtle, p.s-text-subtle')
@@ -819,6 +896,7 @@ def fetch_and_parse_item(ad_url: str) -> Optional[Tuple[Dict[str, Any], Dict[str
         if not parsed:
             return None
         normalized, source = parsed
+        normalized.setdefault('equipment', [])
 
         # Hvis ingen informative felter, forsøk browser-fallback én gang
         if not _has_informative_fields(normalized):
@@ -828,6 +906,7 @@ def fetch_and_parse_item(ad_url: str) -> Optional[Tuple[Dict[str, Any], Dict[str
                 parsed2 = parse_item_html(bhtml)
                 if parsed2:
                     normalized2, source2 = parsed2
+                    normalized2.setdefault('equipment', [])
                     if _has_informative_fields(normalized2):
                         normalized, source = normalized2, source2
 
