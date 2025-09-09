@@ -53,6 +53,19 @@ aspects:
 airflow dags trigger sailboat_semantic_processing
 ```
 
+#### Semantic processing with OpenAI
+
+Use the OpenAI API for embeddings without downloading any local model:
+
+```bash
+export OPENAI_API_KEY="sk-..."
+airflow dags trigger sailboat_semantic_processing
+```
+
+When `OPENAI_API_KEY` is set and no local `sentence-transformers` model is
+available, the DAG generates embeddings via OpenAI and skips local model
+downloads.
+
 ## Tests
 
 Run the semantic search test script which exercises chunking, embeddings and
