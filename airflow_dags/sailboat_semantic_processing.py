@@ -65,7 +65,7 @@ def sailboat_semantic_processing():
             
             # Initialize services
             chunker = BoatDescriptionChunker()
-            embedding_service = create_embedding_service(method="auto")
+            embedding_service = create_embedding_service(method="openai")
             
             logging.info(f"Embedding service ready: {embedding_service.get_info()}")
             
@@ -157,7 +157,7 @@ def sailboat_semantic_processing():
             from semantic.embedder import create_embedding_service
             
             # Initialize scorer
-            embedding_service = create_embedding_service(method="auto")
+            embedding_service = create_embedding_service(method="openai")
             scorer = SemanticScorer(embedding_service)
             
             pg = PostgresHook(postgres_conn_id='postgres_finn_db')
