@@ -519,16 +519,20 @@ def _extract_from_dom_fallback(soup: BeautifulSoup) -> Dict[str, Any]:
             section = h2.find_parent('section')
             container = None
             if section:
-                container = section.find('ul') or section
+                container = (
+                    section.select_one('[data-testid="expandable-section"]')
+                    or section.find('ul')
+                    or section
+                )
             if not container:
                 sib = h2.find_next_sibling()
-                while sib and not sib.find_all('li'):
+                while sib and not sib.find_all(['li', 'p']):
                     sib = sib.find_next_sibling()
                 container = sib
             items: List[str] = []
             if container:
-                for li in container.find_all('li'):
-                    txt = li.get_text(' ', strip=True)
+                for tag in container.find_all(['li', 'p']):
+                    txt = tag.get_text(' ', strip=True)
                     if txt:
                         items.append(txt)
             if items:
