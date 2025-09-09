@@ -161,18 +161,25 @@ def _extract_from_data_props(soup: BeautifulSoup) -> Dict[str, Any]:
 
     def _collect_items(val: Any) -> List[str]:
         items: List[str] = []
-        if isinstance(val, list):
+        if isinstance(val, str):
+            txt = val.strip()
+            if txt:
+                items.append(txt)
+        elif isinstance(val, list):
             for it in val:
-                if isinstance(it, str):
-                    txt = it.strip()
-                    if txt:
-                        items.append(txt)
-                elif isinstance(it, dict):
-                    for k in ('label', 'title', 'value', 'name', 'text'):
-                        v = it.get(k)
-                        if isinstance(v, str) and v.strip():
-                            items.append(v.strip())
-                            break
+                items.extend(_collect_items(it))
+        elif isinstance(val, dict):
+            nested: List[str] = []
+            for key in ('items', 'value', 'values', 'list', 'children'):
+                nested.extend(_collect_items(val.get(key)))
+            if nested:
+                items.extend(nested)
+            else:
+                for k in ('label', 'title', 'value', 'name', 'text'):
+                    v = val.get(k)
+                    if isinstance(v, str) and v.strip():
+                        items.append(v.strip())
+                        break
         return items
 
     def _scan(node: Any) -> None:
@@ -194,6 +201,20 @@ def _extract_from_data_props(soup: BeautifulSoup) -> Dict[str, Any]:
                 _scan(v)
 
     _scan(dp_obj)
+    if not equipment:
+        # Se etter enklere equipment-felt hvis vi ikke fant noe ved skanning
+        for key in ('equipment', 'equipment_safe', 'equipment_unsafe'):
+            raw = ad.get(key) or dp_obj.get(key)
+            if isinstance(raw, list):
+                equipment.extend(_collect_items(raw))
+            elif isinstance(raw, str):
+                eq_soup = BeautifulSoup(raw, 'html.parser')
+                for tag in eq_soup.find_all(['li', 'p']):
+                    txt = tag.get_text(strip=True)
+                    if txt:
+                        equipment.append(txt)
+            if equipment:
+                break
     if equipment:
         data['equipment'] = equipment
 
@@ -498,16 +519,20 @@ def _extract_from_dom_fallback(soup: BeautifulSoup) -> Dict[str, Any]:
             section = h2.find_parent('section')
             container = None
             if section:
-                container = section.find('ul') or section
+                container = (
+                    section.select_one('[data-testid="expandable-section"]')
+                    or section.find('ul')
+                    or section
+                )
             if not container:
                 sib = h2.find_next_sibling()
-                while sib and not sib.find_all('li'):
+                while sib and not sib.find_all(['li', 'p']):
                     sib = sib.find_next_sibling()
                 container = sib
             items: List[str] = []
             if container:
-                for li in container.find_all('li'):
-                    txt = li.get_text(' ', strip=True)
+                for tag in container.find_all(['li', 'p']):
+                    txt = tag.get_text(' ', strip=True)
                     if txt:
                         items.append(txt)
             if items:
