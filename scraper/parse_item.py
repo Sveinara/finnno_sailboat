@@ -1,7 +1,7 @@
 # scraper/parse_item.py
 from __future__ import annotations
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple, List
 from urllib.parse import unquote, urlparse, parse_qs
@@ -52,6 +52,93 @@ def _parse_dt(val: Any) -> Optional[datetime]:
     except Exception:
         return None
     return None
+
+
+def _collect_strings(val: Any) -> List[str]:
+    """Rekursivt trekk ut tekststrenger fra heterogene strukturer."""
+    items: List[str] = []
+    if isinstance(val, str):
+        txt = val.strip()
+        if txt:
+            items.append(txt)
+    elif isinstance(val, list):
+        for it in val:
+            items.extend(_collect_strings(it))
+    elif isinstance(val, dict):
+        nested: List[str] = []
+        for key in ("items", "value", "values", "list", "children"):
+            nested.extend(_collect_strings(val.get(key)))
+        if nested:
+            items.extend(nested)
+        else:
+            for k in ("label", "title", "value", "name", "text"):
+                v = val.get(k)
+                if isinstance(v, str) and v.strip():
+                    items.append(v.strip())
+                    break
+    return items
+
+
+def _parse_equipment_html(raw: str) -> List[str]:
+    """Parse HTML-snutt og trekk ut utstyrsposter."""
+    items: List[str] = []
+    if not raw:
+        return items
+    eq_soup = BeautifulSoup(raw, "html.parser")
+    for li in eq_soup.find_all("li"):
+        txt = li.get_text(" ", strip=True)
+        if txt:
+            items.append(txt)
+    if not items:
+        for p in eq_soup.find_all("p"):
+            txt = p.get_text(" ", strip=True)
+            if txt:
+                items.append(txt)
+    return items
+
+
+def _parse_equipment_container(container: Optional[Tag]) -> List[str]:
+    """Trekk ut utstyrsliste fra en BeautifulSoup-container."""
+    items: List[str] = []
+    if not container:
+        return items
+    lis = container.find_all("li")
+    if lis:
+        for li in lis:
+            txt = li.get_text(" ", strip=True)
+            if txt:
+                items.append(txt)
+        return items
+    for p in container.find_all("p"):
+        txt = p.get_text(" ", strip=True)
+        if txt:
+            items.append(txt)
+    return items
+
+
+def _extract_equipment_from_obj(obj: Any) -> List[str]:
+    """Skann godtykkelig JSON-struktur etter 'Utstyr'-lister."""
+    equipment: List[str] = []
+
+    def _scan(node: Any) -> None:
+        if isinstance(node, dict):
+            heading = None
+            for key in ("heading", "title", "label", "name", "text"):
+                val = node.get(key)
+                if isinstance(val, str):
+                    heading = val.strip()
+                    break
+            if heading and heading.lower() == "utstyr":
+                for key in ("items", "value", "values", "list", "children"):
+                    equipment.extend(_collect_strings(node.get(key)))
+            for v in node.values():
+                _scan(v)
+        elif isinstance(node, list):
+            for v in node:
+                _scan(v)
+
+    _scan(obj)
+    return equipment
 
 
 def _extract_from_data_props(soup: BeautifulSoup) -> Dict[str, Any]:
@@ -156,46 +243,20 @@ def _extract_from_data_props(soup: BeautifulSoup) -> Dict[str, Any]:
         data['price'] = int(price)
         data['currency'] = 'NOK'
 
-    # Utstyr/Equipment-listen kan ligge dypt inne i data-props. Gå rekursivt
-    equipment: List[str] = []
-
-    def _collect_items(val: Any) -> List[str]:
-        items: List[str] = []
-        if isinstance(val, list):
-            for it in val:
-                if isinstance(it, str):
-                    txt = it.strip()
-                    if txt:
-                        items.append(txt)
-                elif isinstance(it, dict):
-                    for k in ('label', 'title', 'value', 'name', 'text'):
-                        v = it.get(k)
-                        if isinstance(v, str) and v.strip():
-                            items.append(v.strip())
-                            break
-        return items
-
-    def _scan(node: Any) -> None:
-        if isinstance(node, dict):
-            heading = None
-            for key in ('heading', 'title', 'label', 'name', 'text'):
-                val = node.get(key)
-                if isinstance(val, str):
-                    heading = val.strip()
-                    break
-            if heading and heading.lower() == 'utstyr':
-                for key in ('items', 'value', 'values', 'list', 'children'):
-                    maybe = node.get(key)
-                    equipment.extend(_collect_items(maybe))
-            for v in node.values():
-                _scan(v)
-        elif isinstance(node, list):
-            for v in node:
-                _scan(v)
-
-    _scan(dp_obj)
+    # Utstyr/Equipment – skann JSON og HTML-felt
+    equipment: List[str] = _extract_equipment_from_obj(dp_obj)
+    if not equipment:
+        # Se etter enklere equipment-felt hvis vi ikke fant noe ved skanning
+        for key in ("equipment", "equipment_safe", "equipment_unsafe"):
+            raw = ad.get(key) or dp_obj.get(key)
+            if isinstance(raw, list):
+                equipment.extend(_collect_strings(raw))
+            elif isinstance(raw, str):
+                equipment.extend(_parse_equipment_html(raw))
+            if equipment:
+                break
     if equipment:
-        data['equipment'] = equipment
+        data["equipment"] = equipment
 
     return data
 
@@ -491,25 +552,24 @@ def _extract_from_dom_fallback(soup: BeautifulSoup) -> Dict[str, Any]:
                     except Exception:
                         pass
 
-    # Finn seksjon med overskrift "Utstyr" og hent alle bullet points
+    # Finn seksjon med overskrift "Utstyr" og hent alle bullet points/avsnitt
     for h2 in soup.find_all('h2'):
         heading = _text(h2)
         if heading and heading.strip().lower() == 'utstyr':
             section = h2.find_parent('section')
             container = None
             if section:
-                container = section.find('ul') or section
+                container = (
+                    section.select_one('[data-testid="expandable-section"]')
+                    or section.find('ul')
+                    or section
+                )
             if not container:
                 sib = h2.find_next_sibling()
-                while sib and not sib.find_all('li'):
+                while sib and not (sib.find_all('li') or sib.find_all('p')):
                     sib = sib.find_next_sibling()
                 container = sib
-            items: List[str] = []
-            if container:
-                for li in container.find_all('li'):
-                    txt = li.get_text(' ', strip=True)
-                    if txt:
-                        items.append(txt)
+            items = _parse_equipment_container(container)
             if items:
                 data['equipment'] = items
             break
