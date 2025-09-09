@@ -35,18 +35,25 @@ def sailboat_semantic_processing():
         
         # Finn annonser med beskrivelse men uten embeddings
         sql = """
-        SELECT ad_id, description
-        FROM sailboat.ads 
-        WHERE active = TRUE 
-          AND description IS NOT NULL 
+        SELECT ad_id, description, equipment
+        FROM sailboat.ads
+        WHERE active = TRUE
+          AND description IS NOT NULL
           AND LENGTH(TRIM(description)) > 50
           AND (has_embeddings = FALSE OR has_embeddings IS NULL)
         ORDER BY ad_id
         LIMIT 100;  -- Prosesser max 100 om gangen
         """
-        
+
         rows = pg.get_records(sql)
-        ads_to_process = [{'ad_id': row[0], 'description': row[1]} for row in rows]
+        ads_to_process = [
+            {
+                'ad_id': row[0],
+                'description': row[1],
+                'equipment': row[2] or [],
+            }
+            for row in rows
+        ]
         
         logging.info(f"Fant {len(ads_to_process)} annonser som trenger semantic processing")
         return ads_to_process
@@ -75,14 +82,21 @@ def sailboat_semantic_processing():
             for ad in ads_to_process:
                 ad_id = ad['ad_id']
                 description = ad['description']
-                
+                equipment = ad.get('equipment') or []
+
+                combined = (
+                    description
+                    if not equipment
+                    else description + "\nUtstyr: " + ", ".join(equipment)
+                )
+
                 try:
-                    # 1. Chunk beskrivelsen
-                    chunks = chunker.chunk_description(description)
+                    # 1. Chunk beskrivelse og utstyr
+                    chunks = chunker.chunk_description(combined)
                     if not chunks:
                         logging.warning(f"Ingen chunks generert for annonse {ad_id}")
                         continue
-                    
+
                     logging.info(f"Prosesserer annonse {ad_id}: {len(chunks)} chunks")
                     
                     # 2. Generer embeddings for alle chunks
