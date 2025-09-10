@@ -134,11 +134,11 @@ def sailboat_item_etl():
                     """
                     INSERT INTO sailboat.staging_item_details (
                       ad_id, scraped_at, source_json, title, description, year, make, model, material, weight_kg,
-                      width_cm, depth_cm, sleepers, seats, engine_make, engine_type, engine_effect_hp,
+                      width_cm, depth_cm, sleepers, seats, engine_make, engine_type, engine_effect_hp, equipment,
                       boat_max_speed_knots, registration_number, municipality, county, postal_code, lat, lng
                     ) VALUES (
                       %(ad_id)s, %(scraped_at)s, %(source_json)s, %(title)s, %(description)s, %(year)s, %(make)s, %(model)s, %(material)s, %(weight_kg)s,
-                      %(width_cm)s, %(depth_cm)s, %(sleepers)s, %(seats)s, %(engine_make)s, %(engine_type)s, %(engine_effect_hp)s,
+                      %(width_cm)s, %(depth_cm)s, %(sleepers)s, %(seats)s, %(engine_make)s, %(engine_type)s, %(engine_effect_hp)s, %(equipment)s,
                       %(boat_max_speed_knots)s, %(registration_number)s, %(municipality)s, %(county)s, %(postal_code)s, %(lat)s, %(lng)s
                     );
                     """,
@@ -160,6 +160,7 @@ def sailboat_item_etl():
                         'engine_make': normalized.get('engine_make'),
                         'engine_type': normalized.get('engine_type'),
                         'engine_effect_hp': normalized.get('engine_effect_hp'),
+                        'equipment': normalized.get('equipment'),
                         'boat_max_speed_knots': normalized.get('boat_max_speed_knots'),
                         'registration_number': normalized.get('registration_number'),
                         'municipality': normalized.get('municipality'),
