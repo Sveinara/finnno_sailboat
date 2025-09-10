@@ -161,17 +161,17 @@ class SemanticSearchEngine:
                 with conn.cursor() as cur:
                     # PgVector cosine similarity search
                     sql = """
-                    SELECT 
-                        dc.ad_id,
-                        dc.chunk_text,
-                        dc.chunk_order,
+                    SELECT
+                        tc.ad_id,
+                        tc.chunk_text,
+                        tc.chunk_order,
                         a.title,
                         a.description,
-                        (dc.embedding <=> %s::vector) as distance
-                    FROM sailboat.description_chunks dc
-                    JOIN sailboat.ads a ON a.ad_id = dc.ad_id
+                        (tc.embedding <=> %s::vector) as distance
+                    FROM sailboat.text_chunks tc
+                    JOIN sailboat.ads a ON a.ad_id = tc.ad_id
                     WHERE a.active = TRUE AND a.has_embeddings = TRUE
-                    ORDER BY dc.embedding <=> %s::vector
+                    ORDER BY tc.embedding <=> %s::vector
                     LIMIT %s;
                     """
                     
