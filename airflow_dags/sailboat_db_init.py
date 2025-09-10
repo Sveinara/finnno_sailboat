@@ -60,6 +60,7 @@ def sailboat_db_init():
             ad_id BIGINT NOT NULL,
             scraped_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             source_json JSONB,
+            equipment TEXT,
             title TEXT,
             description TEXT,
             year INTEGER,
@@ -84,7 +85,7 @@ def sailboat_db_init():
             PRIMARY KEY (ad_id, scraped_at)
         );
         
-        -- Legg til description kolonne hvis den ikke finnes
+        -- Sikre at description-kolonnen finnes og er TEXT
         DO $$ BEGIN
             IF NOT EXISTS (
                 SELECT 1 FROM information_schema.columns
@@ -92,6 +93,33 @@ def sailboat_db_init():
                 AND column_name='description'
             ) THEN
                 ALTER TABLE sailboat.staging_item_details ADD COLUMN description TEXT;
+            ELSIF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema='sailboat' AND table_name='staging_item_details'
+                AND column_name='description'
+                AND data_type NOT IN ('text','character varying')
+            ) THEN
+                ALTER TABLE sailboat.staging_item_details
+                    ALTER COLUMN description TYPE TEXT USING description::text;
+            END IF;
+        END $$;
+
+        -- Sikre at equipment-kolonnen finnes og er TEXT
+        DO $$ BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema='sailboat' AND table_name='staging_item_details'
+                AND column_name='equipment'
+            ) THEN
+                ALTER TABLE sailboat.staging_item_details ADD COLUMN equipment TEXT;
+            ELSIF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema='sailboat' AND table_name='staging_item_details'
+                AND column_name='equipment'
+                AND data_type NOT IN ('text','character varying')
+            ) THEN
+                ALTER TABLE sailboat.staging_item_details
+                    ALTER COLUMN equipment TYPE TEXT USING equipment::text;
             END IF;
         END $$;
 
@@ -120,16 +148,19 @@ def sailboat_db_init():
             postal_code TEXT,
             lat DOUBLE PRECISION,
             lng DOUBLE PRECISION,
+            equipment TEXT,
             latest_price INTEGER,
             first_seen_at TIMESTAMPTZ,
             last_seen_at TIMESTAMPTZ,
             last_scraped_at TIMESTAMPTZ,
             last_edited_at TIMESTAMPTZ,
             active BOOLEAN NOT NULL DEFAULT TRUE,
+            has_embeddings BOOLEAN DEFAULT FALSE,
+            semantic_processed_at TIMESTAMPTZ,
             source_raw JSONB
         );
-        
-        -- Legg til description kolonne i ads hvis den ikke finnes
+
+        -- Sikre at description-kolonnen finnes og er TEXT i ads
         DO $$ BEGIN
             IF NOT EXISTS (
                 SELECT 1 FROM information_schema.columns
@@ -137,6 +168,55 @@ def sailboat_db_init():
                 AND column_name='description'
             ) THEN
                 ALTER TABLE sailboat.ads ADD COLUMN description TEXT;
+            ELSIF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema='sailboat' AND table_name='ads'
+                AND column_name='description'
+                AND data_type NOT IN ('text','character varying')
+            ) THEN
+                ALTER TABLE sailboat.ads
+                    ALTER COLUMN description TYPE TEXT USING description::text;
+            END IF;
+        END $$;
+
+        -- Sikre at equipment-kolonnen finnes og er TEXT i ads
+        DO $$ BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema='sailboat' AND table_name='ads'
+                AND column_name='equipment'
+            ) THEN
+                ALTER TABLE sailboat.ads ADD COLUMN equipment TEXT;
+            ELSIF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema='sailboat' AND table_name='ads'
+                AND column_name='equipment'
+                AND data_type NOT IN ('text','character varying')
+            ) THEN
+                ALTER TABLE sailboat.ads
+                    ALTER COLUMN equipment TYPE TEXT USING equipment::text;
+            END IF;
+        END $$;
+
+        -- Legg til has_embeddings kolonne i ads hvis den ikke finnes
+        DO $$ BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema='sailboat' AND table_name='ads'
+                AND column_name='has_embeddings'
+            ) THEN
+                ALTER TABLE sailboat.ads ADD COLUMN has_embeddings BOOLEAN DEFAULT FALSE;
+            END IF;
+        END $$;
+
+        -- Legg til semantic_processed_at kolonne i ads hvis den ikke finnes
+        DO $$ BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema='sailboat' AND table_name='ads'
+                AND column_name='semantic_processed_at'
+            ) THEN
+                ALTER TABLE sailboat.ads ADD COLUMN semantic_processed_at TIMESTAMPTZ;
             END IF;
         END $$;
 
@@ -152,27 +232,29 @@ def sailboat_db_init():
         -- Enable pgvector extension
         CREATE EXTENSION IF NOT EXISTS vector;
 
-        -- Description chunks with embeddings
-        CREATE TABLE IF NOT EXISTS sailboat.description_chunks (
+        -- Description and equipment chunks with embeddings
+        CREATE TABLE IF NOT EXISTS sailboat.text_chunks (
             chunk_id SERIAL PRIMARY KEY,
             ad_id BIGINT NOT NULL REFERENCES sailboat.ads(ad_id) ON DELETE CASCADE,
+            chunk_source TEXT NOT NULL, -- 'description' eller 'equipment'
             chunk_text TEXT NOT NULL,
-            chunk_order INTEGER NOT NULL, -- Order within the description
+            chunk_order INTEGER NOT NULL, -- Order within the source text
             chunk_length INTEGER NOT NULL,
             overlap_words INTEGER DEFAULT 0,
             embedding vector(384), -- Sentence-Transformers all-MiniLM-L6-v2 dimensjon
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(ad_id, chunk_source, chunk_order)
         );
 
         -- Index for fast similarity search
-        CREATE INDEX IF NOT EXISTS idx_description_chunks_embedding 
-        ON sailboat.description_chunks USING ivfflat (embedding vector_cosine_ops)
+        CREATE INDEX IF NOT EXISTS idx_text_chunks_embedding
+        ON sailboat.text_chunks USING ivfflat (embedding vector_cosine_ops)
         WITH (lists = 100);
 
         -- Index for ad lookup
-        CREATE INDEX IF NOT EXISTS idx_description_chunks_ad_id 
-        ON sailboat.description_chunks (ad_id);
+        CREATE INDEX IF NOT EXISTS idx_text_chunks_ad_id
+        ON sailboat.text_chunks (ad_id);
 
         -- Semantic scoring for different aspects
         CREATE TABLE IF NOT EXISTS sailboat.semantic_scores (
@@ -202,26 +284,6 @@ def sailboat_db_init():
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
 
-        -- Add columns to existing ads table for quick semantic search
-        DO $$ BEGIN
-            IF NOT EXISTS (
-                SELECT 1 FROM information_schema.columns
-                WHERE table_schema='sailboat' AND table_name='ads'
-                AND column_name='has_embeddings'
-            ) THEN
-                ALTER TABLE sailboat.ads ADD COLUMN has_embeddings BOOLEAN DEFAULT FALSE;
-            END IF;
-        END $$;
-
-        DO $$ BEGIN
-            IF NOT EXISTS (
-                SELECT 1 FROM information_schema.columns
-                WHERE table_schema='sailboat' AND table_name='ads'
-                AND column_name='semantic_processed_at'
-            ) THEN
-                ALTER TABLE sailboat.ads ADD COLUMN semantic_processed_at TIMESTAMPTZ;
-            END IF;
-        END $$;
         """
         pg.run(sql)
 

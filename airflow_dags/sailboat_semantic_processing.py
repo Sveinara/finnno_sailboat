@@ -99,12 +99,12 @@ def sailboat_semantic_processing():
                         vector_str = '[' + ','.join(map(str, embedding.vector)) + ']'
                         
                         sql_insert_chunk = """
-                        INSERT INTO sailboat.description_chunks (
-                            ad_id, chunk_text, chunk_order, chunk_length, 
+                        INSERT INTO sailboat.text_chunks (
+                            ad_id, chunk_source, chunk_text, chunk_order, chunk_length,
                             overlap_words, embedding, created_at, updated_at
                         ) VALUES (
-                            %s, %s, %s, %s, %s, %s::vector, NOW(), NOW()
-                        ) ON CONFLICT (ad_id, chunk_order) DO UPDATE SET
+                            %s, %s, %s, %s, %s, %s, %s::vector, NOW(), NOW()
+                        ) ON CONFLICT (ad_id, chunk_source, chunk_order) DO UPDATE SET
                             chunk_text = EXCLUDED.chunk_text,
                             chunk_length = EXCLUDED.chunk_length,
                             overlap_words = EXCLUDED.overlap_words,
@@ -114,6 +114,7 @@ def sailboat_semantic_processing():
                         
                         pg.run(sql_insert_chunk, parameters=(
                             ad_id,
+                            'description',
                             chunk.text,
                             chunk.order,
                             chunk.length,
@@ -189,8 +190,8 @@ def sailboat_semantic_processing():
                         if score.supporting_chunks:
                             # Finn chunk_ids for supporting chunks
                             chunk_ids_sql = """
-                            SELECT chunk_id FROM sailboat.description_chunks 
-                            WHERE ad_id = %s AND chunk_text = ANY(%s)
+                            SELECT chunk_id FROM sailboat.text_chunks
+                            WHERE ad_id = %s AND chunk_source = 'description' AND chunk_text = ANY(%s)
                             """
                             chunk_rows = pg.get_records(chunk_ids_sql, (ad_id, score.supporting_chunks))
                             supporting_chunks = [row[0] for row in chunk_rows]
