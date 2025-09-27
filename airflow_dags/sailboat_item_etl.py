@@ -130,6 +130,18 @@ def sailboat_item_etl():
                     logging.warning(f"Skipper insert for {ad_url} (mangler informative felter)")
                     continue
 
+                equipment_data = normalized.get('equipment')
+                if equipment_data is None:
+                    equipment_serialized = None
+                elif isinstance(equipment_data, str):
+                    equipment_serialized = equipment_data
+                else:
+                    equipment_serialized = json.dumps(
+                        equipment_data,
+                        ensure_ascii=False,
+                        default=json_serialize_with_datetime,
+                    )
+
                 pg.run(
                     """
                     INSERT INTO sailboat.staging_item_details (
@@ -160,7 +172,7 @@ def sailboat_item_etl():
                         'engine_make': normalized.get('engine_make'),
                         'engine_type': normalized.get('engine_type'),
                         'engine_effect_hp': normalized.get('engine_effect_hp'),
-                        'equipment': normalized.get('equipment'),
+                        'equipment': equipment_serialized,
                         'boat_max_speed_knots': normalized.get('boat_max_speed_knots'),
                         'registration_number': normalized.get('registration_number'),
                         'municipality': normalized.get('municipality'),
@@ -216,15 +228,15 @@ def sailboat_item_etl():
         upserted AS (
           INSERT INTO sailboat.ads (
             ad_id, ad_url, title, description, year, make, model, material, weight_kg, width_cm, depth_cm,
-            sleepers, seats, engine_make, engine_type, engine_effect_hp, boat_max_speed_knots,
+            sleepers, seats, engine_make, engine_type, engine_effect_hp, equipment, boat_max_speed_knots,
             registration_number, municipality, county, postal_code, lat, lng,
             latest_price, first_seen_at, last_seen_at, last_scraped_at, last_edited_at, active, source_raw
           )
-          SELECT 
+          SELECT
             COALESCE(d.ad_id, l.ad_id) AS ad_id,
             l.ad_url,
             d.title, d.description, d.year, d.make, d.model, d.material, d.weight_kg, d.width_cm, d.depth_cm,
-            d.sleepers, d.seats, d.engine_make, d.engine_type, d.engine_effect_hp, d.boat_max_speed_knots,
+            d.sleepers, d.seats, d.engine_make, d.engine_type, d.engine_effect_hp, d.equipment, d.boat_max_speed_knots,
             d.registration_number, d.municipality, d.county, d.postal_code, d.lat, d.lng,
             l.price AS latest_price,
             l.scraped_at AS first_seen_at,
@@ -251,6 +263,7 @@ def sailboat_item_etl():
             engine_make = COALESCE(EXCLUDED.engine_make, sailboat.ads.engine_make),
             engine_type = COALESCE(EXCLUDED.engine_type, sailboat.ads.engine_type),
             engine_effect_hp = COALESCE(EXCLUDED.engine_effect_hp, sailboat.ads.engine_effect_hp),
+            equipment = COALESCE(EXCLUDED.equipment, sailboat.ads.equipment),
             boat_max_speed_knots = COALESCE(EXCLUDED.boat_max_speed_knots, sailboat.ads.boat_max_speed_knots),
             registration_number = COALESCE(EXCLUDED.registration_number, sailboat.ads.registration_number),
             municipality = COALESCE(EXCLUDED.municipality, sailboat.ads.municipality),
