@@ -97,7 +97,6 @@ jobs:
           REPO_NAME=$(echo "${REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')
 
           compose_config=$(docker compose config --format json)
-          project=$(echo "$compose_config" | jq -r '.name')
           services=$(echo "$compose_config" | jq -r '.services | to_entries[] | select(.value.build != null) | .key')
 
           if [ -z "$services" ]; then
@@ -108,7 +107,7 @@ jobs:
           services_b64=$(printf '%s' "$services" | base64 | tr -d '\n')
 
           ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" 'bash -s' -- \
-            "${REGISTRY}" "${OWNER}" "${REPO_NAME}" "${project}" "${services_b64}" \
+            "${REGISTRY}" "${OWNER}" "${REPO_NAME}" "${services_b64}" \
             "${{ secrets.DEPLOY_DIRECTORY }}" "${{ secrets.GHCR_TOKEN }}" "${{ secrets.POSTGRES_PASSWORD }}" \
             "${{ secrets.AIRFLOW_FERNET_KEY }}" "${{ secrets.AIRFLOW_SECRET_KEY }}" <<'REMOTE'
             set -euo pipefail
@@ -116,18 +115,20 @@ jobs:
             REGISTRY="$1"
             OWNER="$2"
             REPO_NAME="$3"
-            PROJECT="$4"
-            SERVICES_B64="$5"
-            DEPLOY_DIRECTORY="$6"
-            GHCR_TOKEN="$7"
-            POSTGRES_PASSWORD="$8"
-            AIRFLOW_FERNET_KEY="$9"
-            AIRFLOW_SECRET_KEY="${10}"
+            SERVICES_B64="$4"
+            DEPLOY_DIRECTORY="$5"
+            GHCR_TOKEN="$6"
+            POSTGRES_PASSWORD="$7"
+            AIRFLOW_FERNET_KEY="$8"
+            AIRFLOW_SECRET_KEY="$9"
 
             cd "${DEPLOY_DIRECTORY}"
 
             git fetch origin
             git reset --hard origin/main
+
+            compose_config=$(docker compose config --format json)
+            PROJECT=$(echo "$compose_config" | jq -r '.name')
 
             {
               echo "GHCR_TOKEN=${GHCR_TOKEN}"
