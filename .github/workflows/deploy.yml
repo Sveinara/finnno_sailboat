@@ -1,159 +1,72 @@
-name: Deploy
+name: Build and Deploy to VM Server
 
 on:
   push:
-    branches:
-      - main
+    branches: [ "main" ]
   workflow_dispatch:
 
-env:
-  REGISTRY: ghcr.io
-  COMPOSE_FILE: docker-compose.yml
+permissions:
+  contents: read
+  packages: write
 
 jobs:
   build-and-push:
-    name: Build and push images
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
+      - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.repository_owner }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push per-service images
-        env:
-          OWNER: ${{ github.repository_owner }}
-          REPOSITORY: ${{ github.repository }}
-        run: |
-          set -euo pipefail
+      - name: Lowercase the repo owner name
+        id: string-utils
+        uses: ASzc/change-string-case-action@v6
+        with:
+          string: ${{ github.repository_owner }}
 
-          OWNER=$(echo "${OWNER}" | tr '[:upper:]' '[:lower:]')
-          REPO_NAME=$(echo "${REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')
-
-          compose_config=$(docker compose config --format json)
-          project=$(echo "$compose_config" | jq -r '.name')
-
-          echo "Detected compose project: $project"
-
-          services=$(echo "$compose_config" | jq -r '.services | to_entries[] | select(.value.build != null) | .key')
-
-          if [ -z "$services" ]; then
-            echo "No services with build directives were found."
-            exit 1
-          fi
-
-          for service in $services; do
-            local_image="${project}-${service}"
-            remote_image="${REGISTRY}/${OWNER}/${REPO_NAME}-${service}:latest"
-
-            echo "Building $service"
-            docker compose build "$service"
-
-            echo "Tagging $local_image as $remote_image"
-            docker tag "$local_image" "$remote_image"
-
-            echo "Pushing $remote_image"
-            docker push "$remote_image"
-          done
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/${{ steps.string-utils.outputs.lowercase }}/${{ github.event.repository.name }}:latest
 
   deploy:
-    name: Deploy to server
     needs: build-and-push
     runs-on: ubuntu-latest
-    environment: production
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Deploy to Server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            export APP_DIR=~/app
 
-      - name: Create SSH key
-        run: |
-          install -m 600 -D /dev/null ~/.ssh/id_rsa
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+            if [ ! -d "$APP_DIR" ] ; then
+              git clone https://github.com/${{ github.repository }}.git "$APP_DIR"
+            fi
+            cd "$APP_DIR"
+            git pull
 
-      - name: Add host to known_hosts
-        run: |
-          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
+            cat <<EOF > .env
+            POSTGRES_USER=${{ secrets.POSTGRES_USER }}
+            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+            POSTGRES_DB=${{ secrets.POSTGRES_DB }}
+            MINIO_ROOT_USER=${{ secrets.MINIO_ROOT_USER }}
+            MINIO_ROOT_PASSWORD=${{ secrets.MINIO_ROOT_PASSWORD }}
+            AIRFLOW_UID=50000
+            EOF
 
-      - name: Deploy application
-        env:
-          OWNER: ${{ github.repository_owner }}
-          REPOSITORY: ${{ github.repository }}
-        run: |
-          set -euo pipefail
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-          OWNER=$(echo "${OWNER}" | tr '[:upper:]' '[:lower:]')
-          REPO_NAME=$(echo "${REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')
+            docker compose pull
+            docker compose up -d --force-recreate --remove-orphans
 
-          compose_config=$(docker compose config --format json)
-          project=$(echo "$compose_config" | jq -r '.name')
-          services=$(echo "$compose_config" | jq -r '.services | to_entries[] | select(.value.build != null) | .key')
-
-          if [ -z "$services" ]; then
-            echo "No services with build directives were found."
-            exit 1
-          fi
-
-          services_b64=$(printf '%s' "$services" | base64 | tr -d '\n')
-
-          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" 'bash -s' -- \
-            "${REGISTRY}" "${OWNER}" "${REPO_NAME}" "${project}" "${services_b64}" \
-            "${{ secrets.DEPLOY_DIRECTORY }}" "${{ secrets.GHCR_TOKEN }}" "${{ secrets.POSTGRES_PASSWORD }}" \
-            "${{ secrets.AIRFLOW_FERNET_KEY }}" "${{ secrets.AIRFLOW_SECRET_KEY }}" <<'REMOTE'
-            set -euo pipefail
-
-            REGISTRY="$1"
-            OWNER="$2"
-            REPO_NAME="$3"
-            PROJECT="$4"
-            SERVICES_B64="$5"
-            DEPLOY_DIRECTORY="$6"
-            GHCR_TOKEN="$7"
-            POSTGRES_PASSWORD="$8"
-            AIRFLOW_FERNET_KEY="$9"
-            AIRFLOW_SECRET_KEY="${10}"
-
-            cd "${DEPLOY_DIRECTORY}"
-
-            git fetch origin
-            git reset --hard origin/main
-
-            {
-              echo "GHCR_TOKEN=${GHCR_TOKEN}"
-              echo "POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
-              echo "AIRFLOW_FERNET_KEY=${AIRFLOW_FERNET_KEY}"
-              echo "AIRFLOW_SECRET_KEY=${AIRFLOW_SECRET_KEY}"
-            } > .env
-
-            echo "Logging in to GHCR"
-            printf '%s' "${GHCR_TOKEN}" | docker login "${REGISTRY}" -u "${OWNER}" --password-stdin
-
-            services=$(printf '%s' "${SERVICES_B64}" | base64 -d)
-
-            for service in ${services}; do
-              remote_image="${REGISTRY}/${OWNER}/${REPO_NAME}-${service}:latest"
-              local_image="${PROJECT}-${service}:latest"
-
-              echo "Pulling $remote_image"
-              docker pull "$remote_image"
-              docker tag "$remote_image" "$local_image"
-            done
-
-            docker compose up -d
             docker image prune -f
-REMOTE
-
-      - name: Clean up SSH key
-        if: ${{ always() }}
-        run: rm -f ~/.ssh/id_rsa

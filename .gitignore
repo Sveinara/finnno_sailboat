@@ -1,44 +1,27 @@
-# .gitignore
+# Ignore environment variables file
+.env
+project.env
 
-# Python virtual environment
-.venv/
-venv/
-
-# Python cache
+# Ignore Python cache files
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 
-# IDE/Editor-mapper
-.vscode/
-.idea/
+# Ignore build artifacts
+build/
+dist/
+*.egg-info/
 
-# Ignorer backup-filer
-*.bak
-
-# Ignoerer debug og testfiler
-*.txt
+# Ignore log files
 *.log
-*.log.*
-*.log.*.*
-*.log.*.*.*
-*.log.*.*.*.*
-*.log.*.*.*.*.*
+airflow_logs/
 
-*.html
-*.json
-*.jsonl
-*.jsonl.*
-*.jsonl.*.*
-*.jsonl.*.*.*
-*.jsonl.*.*.*.*
-*.jsonl.*.*.*.*.*
+# Ignore local development files
+.idea/
+.vscode/
+*.swp
+*.swo
 
-*.csv
-*.csv.*
-*.csv.*.*
-*.csv.*.*.*
-*.csv.*.*.*.*
-*.csv.*.*.*.*.*
-
-
-
+# Ignore docker-compose override files
+docker-compose.override.yml
