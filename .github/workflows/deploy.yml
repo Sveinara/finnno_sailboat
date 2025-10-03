@@ -1,4 +1,4 @@
-name: Build and Deploy to Server
+name: Build and Deploy to VM Server
 
 on:
   push:
